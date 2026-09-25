@@ -16,8 +16,10 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
 ## Platforms
 
 - Browser app for computers and phones.
-- Parts of the method may use the phone's camera, accelerometer and GPS.
+- Hosted as a static site on GitHub (no server); all computation runs in the browser, written in Python (e.g. via Pyodide, Python compiled to run in the browser).
+- Parts of the method may use the phone's camera, GPS, accelerometer, gyroscope and compass.
 - Parts of the method are well suited for touch screens.
+- The pipeline runs in separate steps, not necessarily in one go. Intermediate results are stored on the device as files (e.g. JSON) that can be transferred to other devices, e.g. measure on the phone, analyze on the computer. Offline use is not a priority, but stored results allow some steps to run offline.
 
 ## Inputs
 
