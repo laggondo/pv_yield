@@ -13,8 +13,6 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
 - Be usable in a browser on both computers and phones.
 - Possible future extension: a planning tool beyond PV, e.g. for home battery systems.
 
-Most other aspects of PV yield estimation are already covered by existing tools.
-
 ## Platforms
 
 ## Inputs
