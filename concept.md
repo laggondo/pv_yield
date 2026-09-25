@@ -15,6 +15,10 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
 
 ## Platforms
 
+- Browser app for computers and phones.
+- Parts of the method may use the phone's camera, accelerometer and GPS.
+- Parts of the method are well suited for touch screens.
+
 ## Inputs
 
 ## Outputs
