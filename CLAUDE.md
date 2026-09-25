@@ -19,7 +19,7 @@ Project-specific guidance for Claude Code sessions working in this repository.
 - CamelCase for class names, snake_case for functions and variables.
 - Add short, free-form docstrings to all classes and functions (no mandated Args/Returns sections).
 - `###` marks permanent comments (explanations, rationale); plain `#` is only for temporarily commented-out code.
-- Prefer well-established libraries over custom code. Manage non-stdlib dependencies via Miniforge/conda-forge, not pip.
+- Prefer well-established libraries over custom code. The app runs in the browser via Pyodide, so runtime dependencies must be available there (Pyodide's bundled packages or pure-Python wheels installed at runtime with `micropip`, Pyodide's package installer); check this before adding one. For local development and tests, manage dependencies via Miniforge/conda-forge, not pip.
 - Add type hints only where they aid readability or catch likely mistakes.
 - Keep multi-argument signatures and calls on one line rather than one argument per line.
 - Error handling: this is research code, so an uncaught exception with a traceback is acceptable. Don't wrap calls in defensive `try`/`except`; instead make exception messages helpful (include the offending value, filename or context). Only catch an exception when you can recover or add real context.
