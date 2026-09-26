@@ -37,8 +37,22 @@ Not considered for now: radiation reflected from the ground.
 
 ## Outputs
 
+All integral outputs compare obstructed with unobstructed incident radiation. More outputs may be added later.
+
+- **Numeric/tabular:**
+  - Annual radiation and PV yield, with radiation split into direct and diffuse.
+  - Average daily radiation and PV yield for each month.
+  - Annual shading loss (%) and sky view factor (visible fraction of the sky, weighted for diffuse radiation), as in `legacy_code/`.
+- **Visualizations:**
+  - Discretized sky hemisphere with obstructions and the annual sun path, colored by radiation.
+  - Average daily profiles (obstructed and unobstructed) for each month.
+  - Annual bar plot with one bar per day, obstructed and unobstructed radiation.
+- **Panel orientation:** easy comparison of results for different orientations.
+
 ## Pipeline
 
 - *Open question:* is the sky obstruction evaluated at a single point per panel, or across the panel area?
 
 ## Technical decisions
+
+- *Open question:* plotting library. `legacy_code/` uses matplotlib; a library with interactive plots in the browser may be better suited.
