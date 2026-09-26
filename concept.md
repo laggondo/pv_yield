@@ -42,12 +42,15 @@ All integral outputs compare obstructed with unobstructed incident radiation. Mo
 - **Numeric/tabular:**
   - Annual radiation and PV yield, with radiation split into direct and diffuse.
   - Average daily radiation and PV yield for each month.
+  - Specific yield: annual yield per rated panel power (kWh/kWp, kilowatt peak), for comparison between sites.
   - Annual shading loss (%) and sky view factor (visible fraction of the sky, weighted for diffuse radiation), as in `legacy_code/`.
 - **Visualizations:**
-  - Discretized sky hemisphere with obstructions and the annual sun path, colored by radiation.
+  - Discretized sky hemisphere with obstructions and the annual sun path, colored by radiation, so it shows how much radiation each blocked part of the sky costs.
   - Average daily profiles (obstructed and unobstructed) for each month.
   - Annual bar plot with one bar per day, obstructed and unobstructed radiation.
-- **Panel orientation:** easy comparison of results for different orientations.
+  - Carpet plot: hourly radiation over the year as a heatmap (day of year vs. hour of day), obstructed and unobstructed, as in `legacy_code/`.
+- **Panel orientation:** easy comparison of results for different orientations, e.g. a heatmap of annual yield over tilt and azimuth with the best orientation marked.
+- **Export:** results as CSV or JSON together with the inputs used, so runs can be compared later; a PDF report with the key figures and plots.
 
 ## Pipeline
 
