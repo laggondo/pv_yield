@@ -23,6 +23,15 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
 
 ## Inputs
 
+- **Weather data:** hourly typical meteorological year (TMY3 format), established via the paid MeteoNorm service (see `legacy_code/`, sample in `data/`). Explore free alternatives of similar quality, ideally downloaded automatically.
+- **Site coordinates** (latitude/longitude); may come from the weather data.
+- **Panel orientation** (tilt and azimuth), unless it is optimized.
+- **Sky obstruction, LiDAR-based:** point cloud from a LiDAR scanner (e.g. Livox), see `legacy_code/`.
+  - Scanner alignment relative to geographic north (yaw angle); set by hand in the legacy code.
+  - Local panel offset: position of the panel relative to the scanner.
+- **Sky obstruction, photo-based (alternative):** photos of the sky, plus metadata per photo: viewing direction (compass heading, and tilt from accelerometer/gyroscope), camera field of view, GPS position and timestamp.
+- **PV panel parameters:** area, efficiency, performance ratio, etc.
+
 ## Outputs
 
 ## Pipeline
