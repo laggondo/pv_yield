@@ -24,6 +24,7 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
 ## Inputs
 
 - **Weather data:** hourly typical meteorological year (TMY3 format), established via the paid MeteoNorm service (see `legacy_code/`, sample in `data/`). Explore free alternatives of similar quality, ideally downloaded automatically.
+  - *Open question:* browsers block requests from a static page to other sites unless those sites allow it (likely the case for PVGIS, the EU's free solar data service). Find a free source that allows it (e.g. Open-Meteo), or fall back to a manual file download.
 - **Site coordinates** (latitude/longitude); may come from the weather data.
 - **Panel orientation** (tilt and azimuth), unless it is optimized.
 - **Sky obstruction, LiDAR-based:** point cloud from a LiDAR scanner (e.g. Livox), see `legacy_code/`. Scans may be much larger than the 17 MB sample, so this step is meant for computers, not phones.
@@ -38,9 +39,6 @@ Not considered for now: radiation reflected from the ground.
 
 ## Pipeline
 
+- *Open question:* is the sky obstruction evaluated at a single point per panel, or across the panel area?
+
 ## Technical decisions
-
-## Open questions
-
-- **Automatic weather download:** browsers block requests from a static page to other sites unless those sites allow it (e.g. likely PVGIS, the EU's free solar data service). Find a free source that allows it (e.g. Open-Meteo), or fall back to a manual file download.
-- **Evaluation point vs. panel area:** is the sky obstruction evaluated at a single point per panel, or across the panel area?
