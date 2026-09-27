@@ -54,7 +54,31 @@ All integral outputs compare obstructed with unobstructed incident radiation. Mo
 
 ## Pipeline
 
+Most of the functionality already exists in `legacy_code/`; it serves as a reference, not as code to refactor.
+
+### Step 1: Obstructed sky description
+
+The obstructed sky description is the fundamental intermediate result:
+
+- Uses a discretization of the sky hemisphere into triangular sky patches, each defined by three nodes. Most operations work on these patches.
+- The discretization is fine enough that no operations below patch level are needed.
+- Independent of sun position, weather data and panel orientation.
+- Can be stored and re-used later or on a different device.
+- Can be produced by different methods, listed below. The implementation makes it easy to add further methods. (In code, name the methods by what they do, e.g. LiDAR or photo, not by letters.)
 - *Open question:* is the sky obstruction evaluated at a single point per panel, or across the panel area?
+
+**LiDAR method** (see `legacy_code/`):
+
+- Input is a LiDAR point cloud.
+- Points are normalized to unit vectors, giving directions from the scanner.
+- A sky patch counts as obstructed if it contains at least a minimum share of all points; this filters out noise.
+- Accounts for the panel's offset from the scanner position.
+
+**Photo method:**
+
+- Input is a photo of the relevant part of the sky, combined with sensor metadata on camera orientation and field of view.
+- The sky discretization is overlaid on the photo, and the user marks obstructed sky patches manually (touchscreen or mouse).
+- Automatic sky detection may follow later.
 
 ## Technical decisions
 
