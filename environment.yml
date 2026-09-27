@@ -12,4 +12,5 @@ dependencies:
   - pyyaml
   - rich
   - matplotlib
+  - bokeh=3.9
   - pytest
