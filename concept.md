@@ -89,6 +89,15 @@ The obstructed sky description is the fundamental intermediate result:
 
 *Open question:* combining methods, e.g. correcting a LiDAR result manually in the photo view.
 
+### Step 2: Irradiation per sky patch
+
+Brings in the sun position over the year and the weather data; mostly extracted from `legacy_code/`.
+
+- Weather data from multiple sources; at least one option downloads automatically from a free source.
+- Intermediate result: the irradiation assigned to each sky patch. Like step 1, it is independent of the obstruction and the panel orientation, so both can be varied without recomputing it.
+- With a fine discretization, hourly sun positions skip sky patches entirely: the sun moves up to ~15° per hour, more than a patch width. *Proposal:* split each hour into sub-steps small enough that the sun moves less than about half a patch per step (as the legacy code does with `n_sub_steps`), and distribute the hour's direct radiation over the patches of these sub-step sun positions.
+- *Proposal:* per sky patch and hour, store the direct radiation as the radiation-weighted sum of sun direction vectors instead of a single value. Since the incidence on a panel is a dot product with the panel normal, this gives the exact incidence for any panel orientation later, without the error of using the patch center.
+
 ## Technical decisions
 
 - *Open question:* plotting library. `legacy_code/` uses matplotlib; a library with interactive plots in the browser may be better suited.
