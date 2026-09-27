@@ -17,7 +17,7 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
 
 - Browser app for computers and phones.
 - Hosted as a static site on GitHub (no server); all computation runs in the browser, written in Python via Pyodide (Python compiled to run in the browser).
-- Platform decisions, e.g. using Pyodide, should be checked carefully for suitability and better alternatives before building on them.
+- Pyodide was checked against alternatives (PyScript, a JavaScript rewrite, a hybrid) and confirmed (#6). Pages that don't need Python, e.g. marking obstructions in a photo, may be plain JavaScript.
 - Parts of the method may use the phone's camera, GPS, accelerometer, gyroscope and compass.
 - Parts of the method are well suited for touch screens.
 - The pipeline runs in separate steps, not necessarily in one go. Intermediate results are stored on the device as files (JSON for data, YAML for configs) that can be transferred to other devices, e.g. measure on the phone, analyze on the computer. Offline use is not a priority, but stored results allow some steps to run offline.
@@ -121,10 +121,10 @@ Brings in the sun position over the year and the weather data, and produces the 
 - First version: only the LiDAR method for the obstructed sky description.
 - One internal config dict holds all user choices and parameters; it can be exported to and imported from YAML.
 - Core functionality and algorithms live in a library (a Python package within this repository), used by all front ends: the browser app and a command-line app (CLI) for the computer, which suits the LiDAR processing. The core does no user interaction and no file access: it takes data and returns results. User interface and file handling stay in the front ends; plotting is a separate part of the library, so both front ends share the same plots.
-- Browser front end: plain HTML/JavaScript for the user interface, with the Python library running underneath via Pyodide. This gives full control over touch input, camera and sensors, which the photo method needs.
+- Browser front end: plain HTML/JavaScript for the user interface, with the Python library running underneath via Pyodide. This gives full control over touch input, camera and sensors, which the photo method needs. Python runs in a Web Worker so the page stays responsive, the Pyodide version is pinned, and each page loads only the packages it needs. The first-visit download (~30 MB for pvlib on top of Pyodide, then cached by the browser) is acceptable.
 - Sun position and other solar calculations: pvlib (BSD-3-Clause license, permissive). Verified: pvlib 0.16.1 installs and computes sun positions in Pyodide 314.0.7 (Python 3.14); numpy, scipy, pandas, matplotlib and Bokeh are bundled with Pyodide.
 - File formats: configs (exported or hand-written) are YAML; JSON only for larger data files such as the obstructed sky description and the irradiation per sky patch.
 - Every stored file (config, obstructed sky description, irradiation per sky patch) contains a format version, so older files stay readable after format changes.
 - Process whole arrays with numpy instead of Python loops over points or hours (the legacy code loops), especially since Python runs slower in the browser.
 - Repository layout: the package in `src/`, with `pyproject.toml` and a conda `environment.yml` (as in `satellite-heliostat-extractor`).
-- Plotting: interactive plots in the browser, static plots (matplotlib) for PDF reports. The interactive plotting library is still open: Bokeh (used in `satellite-heliostat-extractor`, bundled with Pyodide) is a suitable candidate, but others might be better; check carefully before building on it, as for the platform decisions.
+- Plotting: interactive plots with Bokeh (bundled with Pyodide; chosen over Plotly, Vega-Lite/Altair, ECharts and uPlot, #7), static plots with matplotlib for PDF reports. The same Python plotting code serves both front ends: the CLI writes standalone HTML, the browser embeds the plot as JSON (`json_item`) with BokehJS matching the Python bokeh version exactly.

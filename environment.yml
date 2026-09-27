@@ -1,0 +1,16 @@
+### Local development and CI environment (conda-forge only). Create with:
+###   conda env create -f environment.yml && conda activate pv_yield_estimator
+### Python 3.14 matches Pyodide 314.x, which runs the browser app.
+name: pv_yield_estimator
+channels:
+  - conda-forge
+dependencies:
+  - python=3.14
+  - numpy
+  - pandas
+  - pvlib
+  - pyyaml
+  - rich
+  - matplotlib
+  - bokeh=3.9
+  - pytest
