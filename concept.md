@@ -127,4 +127,4 @@ Brings in the sun position over the year and the weather data, and produces the 
 - Every stored file (config, obstructed sky description, irradiation per sky patch) contains a format version, so older files stay readable after format changes.
 - Process whole arrays with numpy instead of Python loops over points or hours (the legacy code loops), especially since Python runs slower in the browser.
 - Repository layout: the package in `src/`, with `pyproject.toml` and a conda `environment.yml` (as in `satellite-heliostat-extractor`).
-- Plotting: Bokeh for all interactive plots from the start; matplotlib only for static plots in reports (PDF), as in `satellite-heliostat-extractor`.
+- Plotting: interactive plots in the browser, static plots (matplotlib) for PDF reports. The interactive plotting library is still open: Bokeh (used in `satellite-heliostat-extractor`, bundled with Pyodide) is a suitable candidate, but others might be better; check carefully before building on it, as for the platform decisions.
