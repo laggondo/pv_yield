@@ -1,0 +1,22 @@
+### Config for the sample data in data/ (LiDAR scan and MeteoNorm TMY3 file for Freiburg), with the settings of the
+### legacy code. Run from the repository root:
+###   pv-yield-estimator run data/2026-06-01_22-25-29_red_red.csv data/Freiburg-hour.csv -c examples/sample_config.yaml -d results/sample
+format_version: 1
+site: {}                            ### latitude/longitude/altitude; taken from the weather file if not given
+weather:
+  source: tmy3
+sky_obstruction:
+  method: lidar
+  lidar:
+    scanner_heading_deg: 188.1      ### compass azimuth of the scanner's x axis (legacy lidar_yaw_deg -81.9)
+    panel_offset_m: [0.0, 0.0, 0.0] ### panel position relative to the scanner [east, north, up]
+    min_points: 10                  ### minimum number of points in an obstructed sky patch
+panel:
+  tilt_deg: 15
+  azimuth_deg: 180                  ### compass: 180 = south
+  area_m2: 1.0
+  efficiency: 0.20
+  performance_ratio: 0.80
+simulation:
+  n_sky_nodes: 500
+output: {}
