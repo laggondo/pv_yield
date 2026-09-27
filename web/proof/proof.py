@@ -102,7 +102,7 @@ def sky_plot_json():
     return json.dumps({"plot": json_item(plot), "timings": timings, "versions": versions})
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and sys.platform != "emscripten":   ### Pyodide runs the code as __main__ too; there, index.html calls sky_plot_json
     from bokeh.io import save
     from bokeh.resources import INLINE
     output_path = sys.argv[1] if len(sys.argv) > 1 else "sky_plot.html"
