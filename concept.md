@@ -45,7 +45,7 @@ All integral outputs compare obstructed with unobstructed incident radiation. Mo
   - Specific yield: annual yield per rated panel power (kWh/kWp, kilowatt peak), for comparison between sites.
   - Annual shading loss (%) and sky view factor (visible fraction of the sky, weighted for diffuse radiation), as in `legacy_code/`.
 - **Visualizations:**
-  - Discretized sky hemisphere with obstructions and the annual sun path, colored by radiation, so it shows how much radiation each blocked part of the sky costs.
+  - Discretized sky hemisphere with obstructions and the annual sun path, colored by radiation, so it shows how much radiation each blocked part of the sky costs. Independent of panel orientation.
   - Average daily profiles (obstructed and unobstructed) for each month.
   - Annual bar plot with one bar per day, obstructed and unobstructed radiation.
   - Carpet plot: hourly radiation over the year as a heatmap (day of year vs. hour of day), obstructed and unobstructed, as in `legacy_code/`.
@@ -94,9 +94,12 @@ The obstructed sky description is the fundamental intermediate result:
 Brings in the sun position over the year and the weather data; mostly extracted from `legacy_code/`.
 
 - Weather data from multiple sources; at least one option downloads automatically from a free source.
+  - A typical meteorological year (TMY) is preferred; for sources with real historical years, average several years.
+  - Each weather source handles its own time stamp convention (e.g. TMY3: local standard time, value covers the hour before its time stamp; Open-Meteo: UTC), so sun positions match the data exactly. Otherwise morning and evening shading shifts by up to an hour.
 - Intermediate result: the irradiation assigned to each sky patch. Like step 1, it is independent of the obstruction and the panel orientation, so both can be varied without recomputing it.
 - With a fine discretization, hourly sun positions skip sky patches entirely: the sun moves up to ~15° per hour, more than a patch width. *Proposal:* split each hour into sub-steps small enough that the sun moves less than about half a patch per step (as the legacy code does with `n_sub_steps`), and distribute the hour's direct radiation over the patches of these sub-step sun positions.
 - *Proposal:* per sky patch and hour, store the direct radiation as the radiation-weighted sum of sun direction vectors instead of a single value. Since the incidence on a panel is a dot product with the panel normal, this gives the exact incidence for any panel orientation later, without the error of using the patch center.
+- Diffuse radiation is distributed evenly over the sky (isotropic), then weighted per patch by its angle to the panel normal in step 3. This fixes the legacy approach, which uses horizontal diffuse radiation unchanged for any tilt. Brighter zones near the horizon and around the sun are ignored for now.
 
 ## Technical decisions
 
