@@ -89,17 +89,23 @@ The obstructed sky description is the fundamental intermediate result:
 
 *Open question:* combining methods, e.g. correcting a LiDAR result manually in the photo view.
 
-### Step 2: Irradiation per sky patch
+### Step 2: Irradiation and yield
 
-Brings in the sun position over the year and the weather data; mostly extracted from `legacy_code/`.
+Brings in the sun position over the year and the weather data, and produces the outputs; mostly extracted from `legacy_code/`.
 
 - Weather data from multiple sources; at least one option downloads automatically from a free source.
   - A typical meteorological year (TMY) is preferred; for sources with real historical years, average several years.
   - Each weather source handles its own time stamp convention (e.g. TMY3: local standard time, value covers the hour before its time stamp; Open-Meteo: UTC), so sun positions match the data exactly. Otherwise morning and evening shading shifts by up to an hour.
-- Intermediate result: the irradiation assigned to each sky patch. Like step 1, it is independent of the obstruction and the panel orientation, so both can be varied without recomputing it.
-- With a fine discretization, hourly sun positions skip sky patches entirely: the sun moves up to ~15° per hour, more than a patch width. *Proposal:* split each hour into sub-steps small enough that the sun moves less than about half a patch per step (as the legacy code does with `n_sub_steps`), and distribute the hour's direct radiation over the patches of these sub-step sun positions.
-- *Proposal:* per sky patch and hour, store the direct radiation as the radiation-weighted sum of sun direction vectors instead of a single value. Since the incidence on a panel is a dot product with the panel normal, this gives the exact incidence for any panel orientation later, without the error of using the patch center.
-- Diffuse radiation is distributed evenly over the sky (isotropic), then weighted per patch by its angle to the panel normal in step 3. This fixes the legacy approach, which uses horizontal diffuse radiation unchanged for any tilt. Brighter zones near the horizon and around the sun are ignored for now.
+- Intermediate result: the irradiation assigned to each sky patch, per hour. Like step 1, it is independent of the obstruction and the panel orientation, so both can be varied without recomputing it.
+- With a fine discretization, hourly sun positions skip sky patches entirely: the sun moves up to ~15° per hour, more than a patch width. Therefore each hour is split into sub-steps small enough that the sun moves less than about half a patch per step (the legacy code uses sub-steps too, via `n_sub_steps`), and the hour's direct radiation is distributed over the patches of these sub-step sun positions.
+- Per sky patch and hour, the direct radiation is stored as the radiation-weighted sum of sun direction vectors instead of a single value. Since the incidence on a panel is a dot product with the panel normal, this gives the exact incidence for any panel orientation, without the error of using the patch center.
+- Diffuse radiation is distributed evenly over the sky (isotropic) and weighted per patch by its angle to the panel normal. This fixes the legacy approach, which uses horizontal diffuse radiation unchanged for any tilt. Brighter zones near the horizon and around the sun are ignored for now.
+- Obtaining the outputs from the irradiation per sky patch, the obstruction (step 1) and a panel orientation:
+  - Hourly direct and diffuse radiation on the panel: sums over the sky patches, excluding obstructed patches (obstructed) or not (unobstructed).
+  - Daily, monthly and annual values and the carpet plot: sums of the hourly values.
+  - PV yield: radiation on the panel × area × efficiency × performance ratio. Specific yield (kWh/kWp) is radiation on the panel × performance ratio, independent of area and efficiency.
+  - Shading loss: 1 − obstructed / unobstructed radiation.
+  - Orientation comparison: needs only annual sums per sky patch, so a fine grid of orientations is fast to compute.
 
 ## Technical decisions
 
