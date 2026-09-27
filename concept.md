@@ -45,7 +45,7 @@ All integral outputs compare obstructed with unobstructed incident radiation. Mo
   - Specific yield: annual yield per rated panel power (kWh/kWp, kilowatt peak), for comparison between sites.
   - Annual shading loss (%) and sky view factor (visible fraction of the sky, weighted for diffuse radiation), as in `legacy_code/`.
 - **Visualizations:**
-  - Discretized sky hemisphere with obstructions and the annual sun path, colored by radiation, so it shows how much radiation each blocked part of the sky costs.
+  - Discretized sky hemisphere with obstructions and the annual sun path, colored by radiation, so it shows how much radiation each blocked part of the sky costs. Independent of panel orientation.
   - Average daily profiles (obstructed and unobstructed) for each month.
   - Annual bar plot with one bar per day, obstructed and unobstructed radiation.
   - Carpet plot: hourly radiation over the year as a heatmap (day of year vs. hour of day), obstructed and unobstructed, as in `legacy_code/`.
@@ -54,7 +54,58 @@ All integral outputs compare obstructed with unobstructed incident radiation. Mo
 
 ## Pipeline
 
+Most of the functionality already exists in `legacy_code/`; it serves as a reference, not as code to refactor.
+
+### Obstructed sky description
+
+The obstructed sky description is the fundamental intermediate result:
+
+- Uses a discretization of the sky hemisphere into triangular sky patches, each defined by three nodes. Most operations work on these patches.
+- The discretization is fine enough that no operations below patch level are needed.
+- Independent of sun position, weather data and panel orientation.
+- Can be stored and re-used later or on a different device, in a human-readable file (JSON) whose format is the same for all methods:
+  - Nodes as unit vectors, triangles as triples of node indices, and one obstructed yes/no flag per triangle. Storing the discretization itself (not just its parameters) keeps files readable if the default resolution changes.
+  - Metadata such as location and date; the producing method and its settings are recorded for information only and don't change the format.
+  - The legacy code stores a discretization similarly as a dictionary of node zenith/azimuth angles and triangles (`get_sky_discretization_as_dict` in `legacy_code/utilityLib.py`).
+- Coordinate system: x points east, y north, z up. Azimuths follow the compass (0° = north, clockwise). Note that `legacy_code/` uses a different convention (Duffie-Beckman: azimuth 0° = south, x west, y south).
+- Can be produced by different methods, listed below. The implementation makes it easy to add further methods. (In code, name the methods by what they do, e.g. LiDAR or photo, not by letters.)
 - *Open question:* is the sky obstruction evaluated at a single point per panel, or across the panel area?
+
+**LiDAR method** (see `legacy_code/`):
+
+- Input is a LiDAR point cloud.
+- Points are normalized to unit vectors, giving directions from the scanner.
+- A sky patch counts as obstructed if it contains at least a minimum number of points; this filters out noise. The minimum is configurable, either as an absolute count or as a percentage of all points.
+- Accounts for the panel's offset from the scanner position.
+
+**Photo method:**
+
+- Input is a photo of the relevant part of the sky, combined with sensor metadata on camera orientation and field of view.
+- The sky discretization is overlaid on the photo, and the user marks obstructed sky patches manually (touchscreen or mouse).
+- Several photos can be combined. Sky patches not covered by any photo count as unobstructed (optional).
+- Starting assumption: the photo is taken from the panel position, so no offset is needed.
+- *Open question:* how to account for an offset between camera and panel position; easy with LiDAR, not trivial for photos.
+- Automatic sky detection may follow later.
+
+*Open question:* combining methods, e.g. correcting a LiDAR result manually in the photo view.
+
+### Irradiation and yield
+
+Brings in the sun position over the year and the weather data, and produces the outputs; mostly extracted from `legacy_code/`.
+
+- Weather data from multiple sources; at least one option downloads automatically from a free source.
+  - A typical meteorological year (TMY) is preferred; for sources with real historical years, average several years.
+  - Each weather source handles its own time stamp convention (e.g. TMY3: local standard time, value covers the hour before its time stamp; Open-Meteo: UTC), so sun positions match the data exactly. Otherwise morning and evening shading shifts by up to an hour.
+- Intermediate result: the irradiation assigned to each sky patch, per hour. Like the obstructed sky description, it is independent of the obstruction and the panel orientation, so both can be varied without recomputing it.
+- With a fine discretization, hourly sun positions skip sky patches entirely: the sun moves up to ~15° per hour, more than a patch width. Therefore each hour is split into sub-steps small enough that the sun moves less than about half a patch per step (the legacy code uses sub-steps too, via `n_sub_steps`), and the hour's direct radiation is distributed over the patches of these sub-step sun positions.
+- Per sky patch and hour, the direct radiation is stored as the radiation-weighted sum of sun direction vectors instead of a single value. Since the incidence on a panel is a dot product with the panel normal, this gives the exact incidence for any panel orientation, without the error of using the patch center.
+- Diffuse radiation is distributed evenly over the sky (isotropic) and weighted per patch by its angle to the panel normal. This fixes the legacy approach, which uses horizontal diffuse radiation unchanged for any tilt. Brighter zones near the horizon and around the sun are ignored for now.
+- Obtaining the outputs from the irradiation per sky patch, the obstructed sky description and a panel orientation:
+  - Hourly direct and diffuse radiation on the panel: sums over the sky patches, excluding obstructed patches (obstructed) or not (unobstructed).
+  - Daily, monthly and annual values and the carpet plot: sums of the hourly values.
+  - PV yield: radiation on the panel × area × efficiency × performance ratio. Specific yield (kWh/kWp) is radiation on the panel × performance ratio, independent of area and efficiency.
+  - Shading loss: 1 − obstructed / unobstructed radiation.
+  - Orientation comparison: needs only annual sums per sky patch, so a fine grid of orientations is fast to compute.
 
 ## Technical decisions
 
