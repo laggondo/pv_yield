@@ -118,7 +118,7 @@ def test_cli_assembles_and_exports(tmp_path):
     first, second, exported = tmp_path / "first.yaml", tmp_path / "second.yaml", tmp_path / "out.yaml"
     first.write_text(EXAMPLE_CONFIG_YAML)
     second.write_text("panel:\n  tilt_deg: 35\n")
-    main(["-c", str(first), "-c", str(second), "-s", "panel.azimuth_deg=200", "site.latitude=48.0", "--export-config", str(exported)])
+    main(["-c", str(first), "-c", str(second), "-m", "panel.azimuth_deg=200", "site.latitude=48.0", "--export-config", str(exported)])
     config = config_from_yaml(exported.read_text())
     assert config == assemble_config([first, second], ["panel.azimuth_deg=200", "site.latitude=48.0"])
     assert config["panel"] == {"tilt_deg": 35, "azimuth_deg": 200}

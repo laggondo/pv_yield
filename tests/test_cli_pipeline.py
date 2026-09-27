@@ -26,7 +26,7 @@ def test_step_by_step_equals_run(tmp_path):
     assert step_by_step["config"]["panel"]["tilt_deg"] == 15
     assert step_by_step["key_figures"]["sky_view_factor_horizontal"] == pytest.approx(0.5500, abs=1e-4)
     assert len(pd.read_csv(tmp_path / "hourly.csv")) == 8760
-    main(["yield", str(tmp_path / "irradiation.json"), str(tmp_path / "sky.json"), "-o", str(tmp_path / "tilt30.yaml"), "-c", str(SAMPLE_CONFIG), "-s", "panel.tilt_deg=30"])
+    main(["yield", str(tmp_path / "irradiation.json"), str(tmp_path / "sky.json"), "-o", str(tmp_path / "tilt30.yaml"), "-c", str(SAMPLE_CONFIG), "-m", "panel.tilt_deg=30"])
     tilt30 = yaml.safe_load((tmp_path / "tilt30.yaml").read_text())
     assert tilt30["config"]["panel"]["tilt_deg"] == 30
     assert tilt30["key_figures"]["annual_diffuse_unobstructed_kwh_m2"] < step_by_step["key_figures"]["annual_diffuse_unobstructed_kwh_m2"]
@@ -34,7 +34,7 @@ def test_step_by_step_equals_run(tmp_path):
 
 def test_yield_rejects_mismatched_sky(tmp_path):
     """Irradiation computed on another discretization than the obstruction raises a helpful error."""
-    main(["obstruction", str(POINT_CLOUD), "-o", str(tmp_path / "sky.json"), "-s", "simulation.n_sky_nodes=100"])
-    main(["irradiation", str(WEATHER), "-o", str(tmp_path / "irradiation.json"), "-s", "simulation.n_sky_nodes=200"])
+    main(["obstruction", str(POINT_CLOUD), "-o", str(tmp_path / "sky.json"), "-m", "simulation.n_sky_nodes=100"])
+    main(["irradiation", str(WEATHER), "-o", str(tmp_path / "irradiation.json"), "-m", "simulation.n_sky_nodes=200"])
     with pytest.raises(ValueError, match="different sky discretizations"):
         main(["yield", str(tmp_path / "irradiation.json"), str(tmp_path / "sky.json")])

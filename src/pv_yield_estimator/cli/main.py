@@ -32,7 +32,7 @@ def add_common_arguments(parser, defaults=True):
     """Add the config and logging options; subcommands get them without defaults, so they only override if given."""
     suppress = {} if defaults else {"default": argparse.SUPPRESS}
     parser.add_argument("-c", "--config", action="append", type=Path, **({"default": []} | suppress), help="YAML config file; may be repeated, later files override earlier ones")
-    parser.add_argument("-s", "--set", nargs="+", action="extend", metavar="KEY=VALUE", **({"default": []} | suppress), help="override config entries, e.g. -s panel.tilt_deg=30 site.latitude=48.0; values are parsed as YAML")
+    parser.add_argument("-m", "--mod", nargs="+", action="extend", metavar="KEY=VALUE", **({"default": []} | suppress), help="override config entries, e.g. -m panel.tilt_deg=30 site.latitude=48.0; values are parsed as YAML")
     parser.add_argument("--export-config", type=Path, metavar="FILE", **({"default": None} | suppress), help="write the assembled config to this YAML file")
     parser.add_argument("-l", "--log-level", **({"default": "info"} | suppress), help="log level: debug, info, warning, error (default: info)")
 
@@ -141,7 +141,7 @@ def main(argv=None):
     args = parse_arguments(argv)
     setup_logging(args.log_level)
     log.info(f"pv_yield_estimator {__version__}")
-    config = assemble_config(args.config, args.set)
+    config = assemble_config(args.config, args.mod)
     log_config(config)
     if args.export_config is not None:
         args.export_config.write_text(config_to_yaml(config), encoding="utf-8")
