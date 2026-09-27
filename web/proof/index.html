@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pyodide proof: pvlib + Bokeh</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0 auto; padding: 16px; max-width: 900px; background: #fff; color: #222; }
+  h1 { font-size: 1.3rem; }
+  #status { font-family: ui-monospace, monospace; font-size: 0.85rem; background: #f4f4f4; padding: 8px; white-space: pre-wrap; }
+  .error { color: #b00020; }
+  table { border-collapse: collapse; font-size: 0.9rem; margin: 8px 0; }
+  td { padding: 2px 12px 2px 0; }
+  td.number { text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>Pyodide proof: pvlib sun positions + Bokeh sky plot</h1>
+<p>Loads Pyodide, installs pvlib with micropip, computes a year of sun positions and shows a sky hemisphere plot with Bokeh.
+  See issues #6 (platform) and #7 (plotting library). Optional URL parameter <code>?pyodide=&lt;base URL&gt;</code> loads Pyodide from another place, e.g. a self-hosted copy.</p>
+<div id="status"></div>
+<div id="plot"></div>
+<table id="timings"></table>
+<script type="module">
+// Pyodide version whose bundled packages were checked (Python 3.14; bokeh 3.9.0 bundled, pvlib from PyPI).
+const PYODIDE_VERSION = "314.0.7";
+const PVLIB_VERSION = "0.16.1";
+const pyodideBaseUrl = new URLSearchParams(location.search).get("pyodide") ?? `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+
+const statusElement = document.getElementById("status");
+const timings = [];
+const pageStart = performance.now();
+
+// Log a message to the status box and the console.
+function report(message, isError = false) {
+  const line = document.createElement("div");
+  line.textContent = `[${((performance.now() - pageStart) / 1000).toFixed(1)} s] ${message}`;
+  if (isError) line.className = "error";
+  statusElement.appendChild(line);
+  console.log(message);
+}
+
+// Run one step, report it and record its duration.
+async function step(name, action) {
+  report(`${name} ...`);
+  const start = performance.now();
+  const result = await action();
+  timings.push([name, (performance.now() - start) / 1000]);
+  report(`${name}: done`);
+  return result;
+}
+
+// Load a classic script (BokehJS) and resolve when it has run.
+function loadScript(url) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = url;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`Could not load script ${url}`));
+    document.head.appendChild(script);
+  });
+}
+
+// Show the recorded timings and the WebAssembly memory size.
+function showTimings(pythonTimings, pyodide) {
+  const rows = [...timings.map(([name, seconds]) => [`browser: ${name}`, seconds]), ...Object.entries(pythonTimings).map(([name, seconds]) => [`python: ${name}`, seconds])];
+  rows.push(["total since page load", (performance.now() - pageStart) / 1000]);
+  const table = document.getElementById("timings");
+  table.innerHTML = rows.map(([name, seconds]) => `<tr><td>${name}</td><td class="number">${seconds.toFixed(2)} s</td></tr>`).join("");
+  const heapBytes = pyodide?._module?.HEAP8?.buffer?.byteLength;
+  if (heapBytes) table.innerHTML += `<tr><td>WebAssembly memory</td><td class="number">${(heapBytes / 2 ** 20).toFixed(0)} MB</td></tr>`;
+}
+
+try {
+  report(`Pyodide from ${pyodideBaseUrl}`);
+  const { loadPyodide } = await step("import pyodide.mjs", () => import(`${pyodideBaseUrl}pyodide.mjs`));
+  const pyodide = await step("start Pyodide", () => loadPyodide({ indexURL: pyodideBaseUrl }));
+  const bundledPackages = ["micropip", "numpy", "pandas", "bokeh"];
+  await step(`load bundled packages (${bundledPackages.join(", ")})`, () => pyodide.loadPackage(bundledPackages));
+  // loadPackage only logs failures, so check explicitly.
+  const missingPackages = bundledPackages.filter(name => !(name in pyodide.loadedPackages));
+  if (missingPackages.length) throw new Error(`Could not load ${missingPackages.join(", ")} from ${pyodideBaseUrl} (see the browser console)`);
+  await step(`install pvlib ${PVLIB_VERSION} with micropip`, () => pyodide.runPythonAsync(`import micropip\nawait micropip.install("pvlib==${PVLIB_VERSION}")`));
+  const proofCode = await step("fetch proof.py", async () => (await fetch("proof.py")).text());
+  const result = JSON.parse(await step("run proof.py (sun positions, sky plot)", () => { pyodide.runPython(proofCode); return pyodide.runPython("sky_plot_json()"); }));
+  report(`versions: ${JSON.stringify(result.versions)}`);
+  // BokehJS must match the Python bokeh version exactly.
+  await step(`load BokehJS ${result.versions.bokeh}`, () => loadScript(`https://cdn.bokeh.org/bokeh/release/bokeh-${result.versions.bokeh}.min.js`));
+  await step("render plot", () => Bokeh.embed.embed_item(result.plot, "plot"));
+  showTimings(result.timings, pyodide);
+  report("finished");
+  document.body.dataset.state = "finished";
+} catch (error) {
+  report(`Error: ${error.message ?? error}`, true);
+  document.body.dataset.state = "error";
+  throw error;
+}
+</script>
+</body>
+</html>
