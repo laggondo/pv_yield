@@ -33,7 +33,7 @@ def zenith_azimuth_from_directions(directions):
     return zenith, azimuth
 
 
-def panel_normal(tilt_deg=30.0, azimuth_deg=180.0):
+def panel_normal(tilt_deg=0.0, azimuth_deg=180.0):
     """Unit normal of a panel with the given tilt (0° = horizontal) facing the given compass azimuth (180° = south)."""
     return directions_from_zenith_azimuth(np.radians(tilt_deg), np.radians(azimuth_deg))
 

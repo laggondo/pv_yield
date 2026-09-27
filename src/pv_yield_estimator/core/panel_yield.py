@@ -13,7 +13,7 @@ RADIATION_COMPONENTS = ("direct", "diffuse", "total")
 SHADING_CASES = ("unobstructed", "obstructed")
 
 
-def compute_panel_radiation(irradiation, obstructed_sky, tilt_deg=30.0, azimuth_deg=180.0, **kwargs):
+def compute_panel_radiation(irradiation, obstructed_sky, tilt_deg=0.0, azimuth_deg=180.0, **kwargs):
     """Hourly radiation on the panel in Wh/m², obstructed (obstructed patches excluded) and unobstructed.
 
     Columns `<component>_<case>` for component direct, diffuse, total and case unobstructed, obstructed; index = hour
@@ -46,7 +46,7 @@ class YieldResult:
     performance ratio, since 1 kWp corresponds to 1 kW/m² irradiance at standard test conditions.
     """
 
-    def __init__(self, hourly, sky_view_factor, sky_view_factor_horizontal, tilt_deg=30.0, azimuth_deg=180.0, area_m2=1.0, efficiency=0.20, performance_ratio=0.80, **kwargs):
+    def __init__(self, hourly, sky_view_factor, sky_view_factor_horizontal, tilt_deg=0.0, azimuth_deg=180.0, area_m2=1.0, efficiency=0.20, performance_ratio=0.80, **kwargs):
         self.hourly = hourly
         self.sky_view_factor = sky_view_factor
         self.sky_view_factor_horizontal = sky_view_factor_horizontal
@@ -115,6 +115,6 @@ class YieldEstimator:
         log.info(f"Panel tilt {result.tilt_deg}°, azimuth {result.azimuth_deg}°: annual radiation {hourly['total_obstructed'].sum() / 1000:.1f} kWh/m² obstructed, {hourly['total_unobstructed'].sum() / 1000:.1f} unobstructed")
         return result
 
-    def panel_sky_view_factor(self, tilt_deg=30.0, azimuth_deg=180.0, **kwargs):
+    def panel_sky_view_factor(self, tilt_deg=0.0, azimuth_deg=180.0, **kwargs):
         """Sky view factor of the tilted panel: fraction of isotropic diffuse sky radiation on it that passes the obstructions."""
         return self.obstructed_sky.sky_view_factor(panel_normal(tilt_deg, azimuth_deg))

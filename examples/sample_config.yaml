@@ -18,5 +18,5 @@ panel:
   efficiency: 0.20
   performance_ratio: 0.80
 simulation:
-  n_sky_nodes: 500
+  n_sky_nodes: 500                  ### approximate number of sky nodes (default 500); about twice as many sky patches
 output: {}
