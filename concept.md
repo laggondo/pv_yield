@@ -109,4 +109,9 @@ Brings in the sun position over the year and the weather data, and produces the 
 
 ## Technical decisions
 
+- Object-oriented implementation. Where several methods produce the same result (sky obstruction, weather data source), they share a common interface, so further methods can be added easily.
+- Reimplement rather than import modules from `legacy_code/`.
+- First version: only the LiDAR method for the obstructed sky description.
+- One internal config dict holds all user choices and parameters; it can be exported to and imported from JSON.
+- Core functionality and algorithms live in a library (a Python package within this repository), used by all front ends: the browser app and a command-line app (CLI) for the computer, which suits the LiDAR processing. The library does no user interaction: it takes data and returns results, while reading files, UI and plotting stay in the front ends.
 - *Open question:* plotting library. `legacy_code/` uses matplotlib; a library with interactive plots in the browser may be better suited.
