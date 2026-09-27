@@ -109,4 +109,15 @@ Brings in the sun position over the year and the weather data, and produces the 
 
 ## Technical decisions
 
-- *Open question:* plotting library. `legacy_code/` uses matplotlib; a library with interactive plots in the browser may be better suited.
+- Object-oriented implementation. Where several methods produce the same result (sky obstruction, weather data source), they share a common interface, so further methods can be added easily.
+- Reimplement rather than import modules from `legacy_code/`.
+- First version: only the LiDAR method for the obstructed sky description.
+- One internal config dict holds all user choices and parameters; it can be exported to and imported from JSON.
+- Core functionality and algorithms live in a library (a Python package within this repository), used by all front ends: the browser app and a command-line app (CLI) for the computer, which suits the LiDAR processing. The core does no user interaction and no file access: it takes data and returns results. User interface and file handling stay in the front ends; plotting is a separate part of the library, so both front ends share the same plots.
+- Browser front end: plain HTML/JavaScript for the user interface, with the Python library running underneath via Pyodide. This gives full control over touch input, camera and sensors, which the photo method needs.
+- Sun position and other solar calculations: pvlib (BSD-3-Clause license, permissive). Verified: pvlib 0.16.1 installs and computes sun positions in Pyodide 314.0.7 (Python 3.14); numpy, scipy, pandas, matplotlib and Bokeh are bundled with Pyodide, Plotly installs from PyPI.
+- Config files: the app saves JSON; hand-written CLI configs may also be YAML (which can read JSON too).
+- Every stored file (config, obstructed sky description, irradiation per sky patch) contains a format version, so older files stay readable after format changes.
+- Process whole arrays with numpy instead of Python loops over points or hours (the legacy code loops), especially since Python runs slower in the browser.
+- Repository layout: the package in `src/`, with `pyproject.toml` and a conda `environment.yml` (as in `satellite-heliostat-extractor`).
+- Plotting: Bokeh for all interactive plots from the start; matplotlib only for static plots in reports (PDF), as in `satellite-heliostat-extractor`.
