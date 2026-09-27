@@ -5,7 +5,14 @@ Project-specific guidance for Claude Code sessions working in this repository.
 ## Project overview
 
 - Read [`concept.md`](concept.md) first: it describes the big picture and is the reference for the rewrite.
+- Layout: the Python package in `src/pv_yield_estimator/` (`core/`: algorithms without user interaction or file access; `plotting/`; `cli/`), the browser front end as static files in `web/`, tests in `tests/`.
 - `legacy_code/` and `data/` are reference samples only. Don't refactor or extend the legacy code; the program is being rewritten from scratch.
+
+## Workflow
+
+- Work is planned in bundles of issues in the roadmap issue #28 on GitHub. A fresh session is started with *"Work on bundle N of the roadmap, #28."* and follows the section "Workflow for Claude sessions" there: one branch and one pull request per bundle, roughly one commit per issue.
+- Run the tests with `pytest` in the conda environment from `environment.yml`; CI runs the same on every push and pull request.
+- For the `pv-yield-estimator` command, install the package into that environment with `pip install -e . --no-deps` (dependencies come from conda-forge).
 
 ## Communicating with the user
 
