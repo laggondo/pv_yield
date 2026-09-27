@@ -1,5 +1,6 @@
-"""Format versions of stored files (configs, obstructed sky description, irradiation per sky patch)."""
+"""Format versions and JSON text of stored files (configs, obstructed sky description, irradiation per sky patch)."""
 
+import json
 import logging
 
 log = logging.getLogger(__name__)
@@ -26,3 +27,15 @@ def check_format_version(data, current_version, kind, source="<unknown>", missin
     if version > current_version:
         raise ValueError(f"{kind} from {source} has format version {version}, but this program reads up to version {current_version}; update the program")
     return version
+
+
+def to_json_text(data):
+    """Serialize a file's top-level dict as JSON that stays readable: one line per top-level entry and per element of top-level lists."""
+    lines = []
+    for key, value in data.items():
+        if isinstance(value, list) and value and isinstance(value[0], (list, dict)):
+            text = "[\n" + ",\n".join("    " + json.dumps(element) for element in value) + "\n  ]"
+        else:
+            text = json.dumps(value)
+        lines.append(f"  {json.dumps(key)}: {text}")
+    return "{\n" + ",\n".join(lines) + "\n}\n"
