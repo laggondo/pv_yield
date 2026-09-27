@@ -6,7 +6,6 @@ build-backend = "setuptools.build_meta"
 name = "pv_yield_estimator"
 version = "0.1.0"
 description = "Estimate photovoltaic yield from weather data and an obstructed sky description."
-readme = "concept.md"
 requires-python = ">=3.12"
 ### Runtime dependencies must also be available in Pyodide (bundled, or pure-Python wheels via micropip).
 dependencies = ["numpy", "pandas", "pvlib", "pyyaml", "rich"]
