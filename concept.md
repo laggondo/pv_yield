@@ -63,7 +63,11 @@ The obstructed sky description is the fundamental intermediate result:
 - Uses a discretization of the sky hemisphere into triangular sky patches, each defined by three nodes. Most operations work on these patches.
 - The discretization is fine enough that no operations below patch level are needed.
 - Independent of sun position, weather data and panel orientation.
-- Can be stored and re-used later or on a different device.
+- Can be stored and re-used later or on a different device, in a human-readable file (JSON) whose format is the same for all methods:
+  - Nodes as unit vectors, triangles as triples of node indices, and one obstructed yes/no flag per triangle. Storing the discretization itself (not just its parameters) keeps files readable if the default resolution changes.
+  - Metadata such as location and date; the producing method and its settings are recorded for information only and don't change the format.
+  - The legacy code stores a discretization similarly as a dictionary of node zenith/azimuth angles and triangles (`get_sky_discretization_as_dict` in `legacy_code/utilityLib.py`).
+- Coordinate system: x points east, y north, z up. Azimuths follow the compass (0° = north, clockwise). Note that `legacy_code/` uses a different convention (Duffie-Beckman: azimuth 0° = south, x west, y south).
 - Can be produced by different methods, listed below. The implementation makes it easy to add further methods. (In code, name the methods by what they do, e.g. LiDAR or photo, not by letters.)
 - *Open question:* is the sky obstruction evaluated at a single point per panel, or across the panel area?
 
@@ -71,14 +75,19 @@ The obstructed sky description is the fundamental intermediate result:
 
 - Input is a LiDAR point cloud.
 - Points are normalized to unit vectors, giving directions from the scanner.
-- A sky patch counts as obstructed if it contains at least a minimum share of all points; this filters out noise.
+- A sky patch counts as obstructed if it contains at least a minimum number of points; this filters out noise. The minimum is configurable, either as an absolute count or as a percentage of all points.
 - Accounts for the panel's offset from the scanner position.
 
 **Photo method:**
 
 - Input is a photo of the relevant part of the sky, combined with sensor metadata on camera orientation and field of view.
 - The sky discretization is overlaid on the photo, and the user marks obstructed sky patches manually (touchscreen or mouse).
+- Several photos can be combined. Sky patches not covered by any photo count as unobstructed (optional).
+- Starting assumption: the photo is taken from the panel position, so no offset is needed.
+- *Open question:* how to account for an offset between camera and panel position; easy with LiDAR, not trivial for photos.
 - Automatic sky detection may follow later.
+
+*Open question:* combining methods, e.g. correcting a LiDAR result manually in the photo view.
 
 ## Technical decisions
 
