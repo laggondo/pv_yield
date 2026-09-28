@@ -17,7 +17,6 @@ import matplotlib.colors as mcolors
 from scipy.spatial.transform import Rotation
 
 from meteo_data_handler import MeteoDataHandlerTMY3
-import utilityLib as ul
 
 
 # =============================================================================
@@ -78,7 +77,7 @@ def filter_upper_hemisphere(points):
 
 def points_to_spherical(points):
     """Convert Cartesian points to spherical coordinates (zenith, azimuth)
-    following the Duffie-Beckman convention via utilityLib.zen_azm_from_vec.
+    following the Duffie-Beckman convention via zen_azm_from_vec.
 
     zen_azm_from_vec expects vectors pointing FROM the sky object TOWARDS
     the observer (i.e. downward-pointing solar vectors). Our point cloud
