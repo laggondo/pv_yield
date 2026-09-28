@@ -69,7 +69,7 @@ The obstructed sky description is the fundamental intermediate result:
   - Metadata such as location and date; the producing method and its settings are recorded for information only and don't change the format.
 - Coordinate system: x points east, y north, z up. Azimuths follow the compass (0° = north, clockwise). Note that `legacy_code/` uses a different convention (Duffie-Beckman: azimuth 0° = south, x west, y south).
 - Can be produced by different methods, listed below. The implementation makes it easy to add further methods. (In code, name the methods by what they do, e.g. LiDAR or photo, not by letters.)
-- *Open question:* is the sky obstruction evaluated at a single point per panel, or across the panel area?
+- Evaluated at a single point per panel (e.g. its centre) for the first version (#10); area evaluation could later combine several obstructed sky descriptions, one per sample point on the panel.
 
 **LiDAR method** (see `legacy_code/`):
 
