@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pv_yield_estimator"
+version = "0.1.0"
+description = "Estimate photovoltaic yield from weather data and an obstructed sky description."
+requires-python = ">=3.12"
+### Runtime dependencies must also be available in Pyodide (bundled, or pure-Python wheels via micropip).
+dependencies = ["numpy", "scipy", "pandas", "pvlib", "pyyaml", "rich", "bokeh", "matplotlib"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+pv-yield-estimator = "pv_yield_estimator.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+### Tests import the package from src/ without installing it.
+pythonpath = ["src"]
+testpaths = ["tests"]
