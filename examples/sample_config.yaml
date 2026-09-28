@@ -4,7 +4,7 @@
 format_version: 1
 site: {}                            ### latitude/longitude/altitude; taken from the weather file if not given
 weather:
-  source: tmy3
+  source: tmy3                      ### tmy3 (MeteoNorm file) or pvgis_tmy (data/Freiburg-pvgis-tmy.csv)
 sky_obstruction:
   method: lidar
   lidar:

@@ -1,5 +1,6 @@
 """Weather sources and the internal hourly weather data representation."""
 
+import datetime
 import io
 import logging
 from abc import ABC, abstractmethod
@@ -61,7 +62,7 @@ def hourly_typical_year(radiation, year=2025):
 
 
 class WeatherSource(ABC):
-    """Common interface of weather sources (TMY3 file, later automatic downloads).
+    """Common interface of weather sources (TMY3 file, PVGIS TMY, later automatic downloads).
 
     Each source handles its own time stamp convention and converts to `WeatherData`: hourly, index = hour start,
     timezone-aware. The core receives file content, not paths.
@@ -100,8 +101,50 @@ class Tmy3WeatherSource(WeatherSource):
         return weather
 
 
+class PvgisTmyWeatherSource(WeatherSource):
+    """Typical meteorological year from PVGIS (the EU's free solar data service), CSV or JSON as downloaded.
+
+    PVGIS time stamps are UTC. The irradiance values are the satellite estimate at the time stamp plus the file's
+    "irradiance time offset" (e.g. 0.18 h), so each value is taken as the mean of the hour centred there. The index is
+    converted to local standard time, UTC + `utc_offset_hours` (default: longitude / 15° rounded, i.e. UTC+1 for
+    Central Europe), so days and hours of the day group like local time. The year is set to `year` for all rows, as
+    a TMY mixes months from different years; a February 29 is dropped.
+    """
+
+    source_name = "pvgis_tmy"
+
+    def __init__(self, content, year=2025, utc_offset_hours=None, pvgis_format="csv", **kwargs):
+        self.content = content
+        self.year = year
+        self.utc_offset_hours = utc_offset_hours
+        self.pvgis_format = pvgis_format
+
+    def load(self):
+        """Parse the PVGIS content with pvlib and convert it to the internal representation."""
+        ### pvlib's PVGIS CSV parser reads bytes.
+        buffer = io.BytesIO(self.content.encode("utf-8")) if isinstance(self.content, str) and self.pvgis_format == "csv" else io.StringIO(self.content) if isinstance(self.content, str) else self.content
+        data, metadata = pvlib.iotools.read_pvgis_tmy(buffer, pvgis_format=self.pvgis_format, map_variables=True)
+        inputs = metadata["inputs"]
+        latitude, longitude = float(inputs["latitude"]), float(inputs["longitude"])
+        hourly = data[list(RADIATION_COLUMNS)].astype(float).clip(lower=0.0)
+        index = hourly.index
+        hourly = hourly[~((index.month == 2) & (index.day == 29))]
+        index = hourly.index
+        hourly.index = pd.DatetimeIndex(pd.to_datetime({"year": self.year, "month": index.month, "day": index.day, "hour": index.hour})).tz_localize("UTC")
+        hourly = hourly.sort_index()
+        time_offset_hours = float(inputs.get("irradiance time offset", 0.0))
+        hourly.index = hourly.index + pd.Timedelta(hours=time_offset_hours - 0.5)
+        utc_offset_hours = round(longitude / 15.0) if self.utc_offset_hours is None else self.utc_offset_hours
+        hourly.index = hourly.index.tz_convert(datetime.timezone(datetime.timedelta(hours=utc_offset_hours)))
+        if len(hourly) != 8760:
+            log.warning(f"PVGIS TMY has {len(hourly)} hours, expected 8760")
+        weather = WeatherData(hourly=hourly, latitude=latitude, longitude=longitude, altitude=float(inputs.get("elevation", 0.0)), name=f"PVGIS TMY {latitude:.3f}, {longitude:.3f}", source=self.source_name, metadata=metadata)
+        log.info(f"PVGIS TMY weather at {latitude}°, {longitude}° (irradiance time offset {time_offset_hours:g} h, local standard time UTC{utc_offset_hours:+g}): annual GHI {hourly['ghi'].sum() / 1000:.1f}, DHI {hourly['dhi'].sum() / 1000:.1f}, DNI {hourly['dni'].sum() / 1000:.1f} kWh/m²")
+        return weather
+
+
 ### Weather sources by name, as selected by `weather.source` in the config; further sources plug in here.
-WEATHER_SOURCES = {Tmy3WeatherSource.source_name: Tmy3WeatherSource}
+WEATHER_SOURCES = {Tmy3WeatherSource.source_name: Tmy3WeatherSource, PvgisTmyWeatherSource.source_name: PvgisTmyWeatherSource}
 
 
 def load_weather(content, source="tmy3", **kwargs):

@@ -142,3 +142,13 @@ def test_mismatched_discretizations_raise(irradiation):
     """Irradiation and obstruction on different discretizations raise an error explaining the fix."""
     with pytest.raises(ValueError, match="different sky discretizations"):
         compute_panel_radiation(irradiation, unobstructed(SkyDiscretization.from_node_count(100)))
+
+
+def test_pvgis_horizontal_unobstructed_matches_ghi_hourly(sky):
+    """With the PVGIS time convention, DHI + direct on a horizontal panel reproduces each hour's GHI closely (checks the time alignment)."""
+    weather = load_weather((Path(__file__).resolve().parents[1] / "data" / "Freiburg-pvgis-tmy.csv").read_text(encoding="utf-8"), source="pvgis_tmy")
+    irradiation = compute_patch_irradiation(weather, sky, **resolve_site(weather))
+    hourly = compute_panel_radiation(irradiation, unobstructed(sky), tilt_deg=0.0)
+    error = hourly["total_unobstructed"].to_numpy() - weather.hourly["ghi"].to_numpy()
+    assert np.sqrt(np.mean(error ** 2)) < 2.0
+    assert hourly["total_unobstructed"].sum() == pytest.approx(weather.hourly["ghi"].sum(), rel=3e-3)

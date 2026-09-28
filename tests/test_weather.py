@@ -67,3 +67,21 @@ def test_resolve_site(weather, caplog):
     no_site = WeatherData(weather.hourly)
     with pytest.raises(ValueError, match="site.latitude"):
         resolve_site(no_site)
+
+
+PVGIS_PATH = Path(__file__).resolve().parents[1] / "data" / "Freiburg-pvgis-tmy.csv"
+
+
+def test_pvgis_tmy_sums_site_and_time_stamps():
+    """The PVGIS TMY loads with its annual sums and site; hours start at the time stamp + irradiance time offset - 30 min, in UTC+1."""
+    weather = load_weather(PVGIS_PATH.read_text(encoding="utf-8"), source="pvgis_tmy")
+    annual = weather.hourly.sum() / 1000.0
+    assert annual["ghi"] == pytest.approx(1178.293, abs=0.01) and annual["dhi"] == pytest.approx(587.177, abs=0.01) and annual["dni"] == pytest.approx(1134.549, abs=0.01)
+    assert (weather.latitude, weather.longitude, weather.altitude) == (48.0, 7.85, 274.0)
+    index = weather.hourly.index
+    assert len(index) == 8760 and str(index.tz) == "UTC+01:00"
+    assert index[0] == pd.Timestamp("2025-01-01 00:00", tz="UTC") + pd.Timedelta(hours=0.1795 - 0.5)
+    assert (weather.hourly >= 0).all().all()
+    ghi = weather.hourly["ghi"]
+    mean_hour = np.average(index.hour + index.minute / 60 + 0.5, weights=ghi)
+    assert mean_hour == pytest.approx(12.0 + (15.0 - 7.85) * 4 / 60, abs=0.15)
