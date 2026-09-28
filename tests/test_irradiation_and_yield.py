@@ -13,7 +13,7 @@ from pv_yield_estimator.core.sky import ObstructedSky, SkyDiscretization, direct
 from pv_yield_estimator.core.weather import load_weather, resolve_site
 from pv_yield_estimator.file_format import to_json_text
 
-TMY3_PATH = Path(__file__).resolve().parents[1] / "data" / "Freiburg-hour.csv"
+PVGIS_PATH = Path(__file__).resolve().parents[1] / "data" / "Freiburg-pvgis-tmy.csv"
 
 
 @pytest.fixture(scope="module")
@@ -24,8 +24,8 @@ def sky():
 
 @pytest.fixture(scope="module")
 def weather():
-    """The sample TMY3 weather data."""
-    return load_weather(TMY3_PATH.read_text(encoding="utf-8"))
+    """The sample PVGIS weather data."""
+    return load_weather(PVGIS_PATH.read_text(encoding="utf-8"), source="pvgis_tmy")
 
 
 @pytest.fixture(scope="module")
@@ -73,7 +73,7 @@ def test_horizontal_unobstructed_panel_reproduces_ghi(irradiation, weather, sky)
 def test_sun_patches_follow_the_sun(irradiation):
     """At summer noon the direct vector points south and high; the sun path moves east to west in the morning and evening."""
     index = irradiation.index
-    noon = np.nonzero(index == pd.Timestamp("2025-06-21 12:00", tz="UTC+01:00"))[0][0]
+    noon = np.nonzero((index.month == 6) & (index.day == 21) & (index.hour == 12))[0][0]
     vector = irradiation.direct_vectors[irradiation.direct_hours == noon].sum(axis=0)
     assert vector[1] < 0 and vector[2] / np.linalg.norm(vector) > np.sin(np.radians(60))
     morning = irradiation.direct_vectors[np.isin(irradiation.direct_hours, np.nonzero(index.hour == 7)[0])].sum(axis=0)
@@ -144,9 +144,15 @@ def test_mismatched_discretizations_raise(irradiation):
         compute_panel_radiation(irradiation, unobstructed(SkyDiscretization.from_node_count(100)))
 
 
-def test_pvgis_horizontal_unobstructed_matches_ghi_hourly(sky):
-    """With the PVGIS time convention, DHI + direct on a horizontal panel reproduces each hour's GHI closely (checks the time alignment)."""
-    weather = load_weather((Path(__file__).resolve().parents[1] / "data" / "Freiburg-pvgis-tmy.csv").read_text(encoding="utf-8"), source="pvgis_tmy")
+@pytest.mark.parametrize("source", ["pvgis_tmy", "tmy3"])
+def test_horizontal_unobstructed_matches_ghi_hourly(sky, source, synthetic_tmy3_text):
+    """With each source's time convention, DHI + direct on a horizontal panel reproduces each hour's GHI closely.
+
+    Checks the time alignment: a shift by half an hour gives an error of more than 10 W/m² RMS. The synthetic TMY3 file
+    is exactly consistent at mid-hour; PVGIS data is consistent at its own time stamps.
+    """
+    content = PVGIS_PATH.read_text(encoding="utf-8") if source == "pvgis_tmy" else synthetic_tmy3_text
+    weather = load_weather(content, source=source)
     irradiation = compute_patch_irradiation(weather, sky, **resolve_site(weather))
     hourly = compute_panel_radiation(irradiation, unobstructed(sky), tilt_deg=0.0)
     error = hourly["total_unobstructed"].to_numpy() - weather.hourly["ghi"].to_numpy()

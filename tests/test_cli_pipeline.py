@@ -10,7 +10,7 @@ from pv_yield_estimator.cli.main import main
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 POINT_CLOUD = REPOSITORY / "data" / "2026-06-01_22-25-29_red_red.csv"
-WEATHER = REPOSITORY / "data" / "Freiburg-hour.csv"
+WEATHER = REPOSITORY / "data" / "Freiburg-pvgis-tmy.csv"
 SAMPLE_CONFIG = REPOSITORY / "examples" / "sample_config.yaml"
 
 
@@ -35,6 +35,6 @@ def test_step_by_step_equals_run(tmp_path):
 def test_yield_rejects_mismatched_sky(tmp_path):
     """Irradiation computed on another discretization than the obstruction raises a helpful error."""
     main(["obstruction", str(POINT_CLOUD), "-o", str(tmp_path / "sky.json"), "-m", "simulation.n_sky_nodes=100"])
-    main(["irradiation", str(WEATHER), "-o", str(tmp_path / "irradiation.json"), "-m", "simulation.n_sky_nodes=200"])
+    main(["irradiation", str(WEATHER), "-o", str(tmp_path / "irradiation.json"), "-m", "simulation.n_sky_nodes=200", "weather.source=pvgis_tmy"])
     with pytest.raises(ValueError, match="different sky discretizations"):
         main(["yield", str(tmp_path / "irradiation.json"), str(tmp_path / "sky.json")])

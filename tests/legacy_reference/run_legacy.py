@@ -1,11 +1,9 @@
-"""Run the legacy code on the sample data and record its key figures in `legacy_key_figures.yaml`.
+"""Record the key figures of the legacy code on the sample data in `legacy_key_figures.yaml` (reference only, #23).
 
-Reference only (#23): the legacy functions are called unchanged, with the parameters of the legacy main block and
-the sample files from `data/`. Run from the repository root:
-
-    python tests/legacy_reference/run_legacy.py
-
-The recorded figures are the reference of `tests/test_legacy_comparison.py`.
+The legacy functions were called unchanged, with the parameters of the legacy main block. The script can no longer
+be re-run: the MeteoNorm weather file (`data/Freiburg-hour.csv`) and `legacy_code/utilityLib.py` it used have been
+removed from the repository. It is kept to document how the recorded figures were produced; they are the reference
+of `tests/test_legacy_comparison.py`.
 """
 
 import sys

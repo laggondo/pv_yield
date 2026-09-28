@@ -24,7 +24,7 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
 
 ## Inputs
 
-- **Weather data:** e.g. an hourly typical meteorological year (TMY3 format), established via the paid MeteoNorm service (see `legacy_code/`, sample in `data/`). Explore free alternatives of similar quality, ideally downloaded automatically.
+- **Weather data:** e.g. an hourly typical meteorological year (TMY3 format), established via the paid MeteoNorm service (see `legacy_code/`), or from the free PVGIS service (sample in `data/`). Explore free alternatives of similar quality, ideally downloaded automatically.
   - *Open question:* browsers block requests from a static page to other sites unless those sites allow it; PVGIS (the EU's free solar data service) likely does not. Find a free source that allows it (e.g. Open-Meteo), or fall back to a manual file download.
 - **Site coordinates** (latitude/longitude); may come from the weather data or from user inputs.
 - **Panel orientation** (tilt and azimuth), unless it is optimized.

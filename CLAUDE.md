@@ -14,7 +14,7 @@ Project-specific guidance for Claude Code sessions working in this repository.
 - Run the tests with `pytest` in the conda environment from `environment.yml`; CI runs the same on every push and pull request.
 - For the `pv-yield-estimator` command, install the package into that environment with `pip install -e . --no-deps` (dependencies come from conda-forge).
 - The CLI runs the pipeline steps as subcommands (`obstruction`, `irradiation`, `yield`, or all at once with `run`), each reading and writing intermediate files. Config files are given with `-c/--config` (repeatable); single entries are changed with `-m/--mod KEY=VALUE` using dotted keys, e.g. `-m panel.tilt_deg=30 simulation.n_sky_nodes=1000`. Example on the sample data, from the repository root:
-  `pv-yield-estimator run data/2026-06-01_22-25-29_red_red.csv data/Freiburg-hour.csv -c examples/sample_config.yaml -d results/sample`
+  `pv-yield-estimator run data/2026-06-01_22-25-29_red_red.csv data/Freiburg-pvgis-tmy.csv -c examples/sample_config.yaml -d results/sample`
 
 ## Communicating with the user
 

@@ -1,10 +1,10 @@
-### Config for the sample data in data/ (LiDAR scan and MeteoNorm TMY3 file for Freiburg), with the settings of the
+### Config for the sample data in data/ (LiDAR scan and PVGIS typical meteorological year for Freiburg), with the settings of the
 ### legacy code. Run from the repository root:
-###   pv-yield-estimator run data/2026-06-01_22-25-29_red_red.csv data/Freiburg-hour.csv -c examples/sample_config.yaml -d results/sample
+###   pv-yield-estimator run data/2026-06-01_22-25-29_red_red.csv data/Freiburg-pvgis-tmy.csv -c examples/sample_config.yaml -d results/sample
 format_version: 1
 site: {}                            ### latitude/longitude/altitude; taken from the weather file if not given
 weather:
-  source: tmy3                      ### tmy3 (MeteoNorm file) or pvgis_tmy (data/Freiburg-pvgis-tmy.csv)
+  source: pvgis_tmy                 ### pvgis_tmy (PVGIS file, as data/Freiburg-pvgis-tmy.csv) or tmy3 (e.g. MeteoNorm)
 sky_obstruction:
   method: lidar
   lidar:
