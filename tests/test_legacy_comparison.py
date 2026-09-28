@@ -7,7 +7,7 @@ nodes and triangles (for the same node count), and the scanner rotation converts
 
 The recorded annual radiation values were computed with a MeteoNorm weather file that has since been removed from the
 repository (licence), as has `legacy_code/utilityLib.py`, so neither the radiation comparison nor `run_legacy.py`
-can be re-run. The comparison is documented in laggondo/pv_yield_estimator#30: direct radiation within 1 %
+can be re-run. The comparison is documented in #30: direct radiation within 1 %
 (unobstructed) and 2 % (obstructed) of the legacy values, diffuse equal for a horizontal panel.
 """
 
