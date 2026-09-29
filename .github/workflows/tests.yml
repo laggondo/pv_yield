@@ -18,3 +18,19 @@ jobs:
           environment-file: environment.yml
           cache-environment: true
       - run: pytest -v
+
+  ### Headless Chromium smoke test of the browser app: loads Pyodide and the packages from the CDNs and computes the sample.
+  browser:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          create-args: playwright-python
+          cache-environment: true
+      - run: python -m playwright install --with-deps chromium
+      - run: PV_YIELD_BROWSER_TEST=1 pytest -v tests/test_browser_app.py
