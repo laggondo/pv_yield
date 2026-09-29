@@ -5,7 +5,6 @@ Units: radiation per patch and year in kWh/m², hourly radiation on the panel in
 
 import numpy as np
 import pandas as pd
-from bokeh.layouts import column
 from bokeh.models import ColorBar, ColumnDataSource, FixedTicker, HoverTool, Legend, LegendItem, LinearColorMapper, Row
 from bokeh.palettes import Inferno256
 from bokeh.plotting import figure
@@ -100,26 +99,36 @@ def hour_axis_offset(index):
     return first.minute / 60.0 + first.second / 3600.0
 
 
-def carpet_plots(result, component="total", width=900, height=260):
-    """Carpet plots of the hourly radiation on the panel over the year (day of year vs. hour of day, midnight at the top), unobstructed and obstructed, with one shared colour scale."""
+def carpet_plots(result, component="total", width=350, height=640):
+    """Carpet plots of the hourly radiation on the panel over the year (hour of day across, day of year downwards), unobstructed and obstructed, with one shared colour scale.
+
+    Hours start where the weather data's hours start (e.g. at xx:41 for PVGIS data), so each day's last hour reaches
+    past 24:00; that part is drawn again at the start of the next day (a second, shifted copy of the image, clipped
+    by the axis), leaving no gap at 0:00. The two plots sit in a row that wraps: side by side on a computer, one
+    below the other on a phone.
+    """
     hourly = result.hourly
     offset = hour_axis_offset(hourly.index)
-    tables = {case: hourly.pivot_table(index=hourly.index.hour, columns=hourly.index.dayofyear, values=f"{component}_{case}", aggfunc="sum").reindex(range(24)) for case in SHADING_CASES}
-    first_day, last_day = tables["unobstructed"].columns.min(), tables["unobstructed"].columns.max()
+    ### Rows: days, columns: hours of the day (by the hour's start).
+    tables = {case: hourly.pivot_table(index=hourly.index.dayofyear, columns=hourly.index.hour, values=f"{component}_{case}", aggfunc="sum").reindex(columns=range(24)) for case in SHADING_CASES}
+    first_day, last_day = tables["unobstructed"].index.min(), tables["unobstructed"].index.max()
+    n_days = last_day - first_day + 1
     color_mapper = LinearColorMapper(palette=Inferno256, low=0.0, high=float(max(table.max().max() for table in tables.values())), nan_color="white")
     month_starts = pd.date_range(f"{hourly.index[0].year}-01-01", periods=12, freq="MS")
     plots = []
     for case in SHADING_CASES:
-        plot = figure(title=f"Hourly {component} radiation on the panel (Wh/m²), {case}", x_range=plots[0].x_range if plots else (first_day - 0.5, last_day + 0.5), y_range=(24, 0),
-                      width=width, height=height, sizing_mode="scale_width", **INACTIVE_TOOLS, x_axis_label="day of year", y_axis_label="hour of day (local standard time)")
-        image = plot.image(image=[tables[case].to_numpy()], x=first_day - 0.5, y=offset, dw=last_day - first_day + 1, dh=24, color_mapper=color_mapper)
-        plot.add_tools(HoverTool(renderers=[image], tooltips=[("day of year", "$x{0}"), ("hour of day", "$y{0.0}"), ("radiation", "@image{0} Wh/m²")]))
-        plot.xaxis.ticker = FixedTicker(ticks=list(month_starts.dayofyear))
-        plot.xaxis.major_label_overrides = {day: name for day, name in zip(month_starts.dayofyear, MONTH_NAMES)}
-        plot.yaxis.ticker = FixedTicker(ticks=list(range(0, 25, 3)))
-        plot.add_layout(ColorBar(color_mapper=color_mapper, title="Wh/m²"), "right")
+        plot = figure(title=f"{case.capitalize()}", x_range=plots[0].x_range if plots else (0, 24), y_range=plots[0].y_range if plots else (last_day + 0.5, first_day - 0.5),
+                      width=width, height=height, **INACTIVE_TOOLS, x_axis_label="hour of day (local standard time)", y_axis_label="day of year")
+        image = tables[case].to_numpy()
+        images = [plot.image(image=[image], x=offset, y=first_day - 0.5, dw=24, dh=n_days, color_mapper=color_mapper),
+                  plot.image(image=[image], x=offset - 24, y=first_day + 0.5, dw=24, dh=n_days, color_mapper=color_mapper)]   ### the part past 24:00, at the start of the next day
+        plot.add_tools(HoverTool(renderers=images, tooltips=[("day of year", "$y{0}"), ("hour of day", "$x{0.0}"), ("radiation", "@image{0} Wh/m²")]))
+        plot.yaxis.ticker = FixedTicker(ticks=list(month_starts.dayofyear))
+        plot.yaxis.major_label_overrides = {day: name for day, name in zip(month_starts.dayofyear, MONTH_NAMES)}
+        plot.xaxis.ticker = FixedTicker(ticks=list(range(0, 25, 3)))
+        plot.add_layout(ColorBar(color_mapper=color_mapper, title=f"hourly {component} radiation on the panel (Wh/m²)", orientation="horizontal", height=12), "below")
         plots.append(plot)
-    return column(plots, sizing_mode="scale_width")
+    return Row(children=plots, styles={"flex-wrap": "wrap", "gap": "16px"}, sizing_mode="stretch_width")
 
 
 def monthly_profiles_plot(result, width=250, height=200):
