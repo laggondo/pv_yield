@@ -3,7 +3,7 @@
 Subcommands run the pipeline steps, each reading and writing intermediate files:
 - `obstruction`: LiDAR point cloud → obstructed sky description (JSON)
 - `irradiation`: weather file → irradiation per sky patch (JSON)
-- `yield`: irradiation per sky patch + obstructed sky description → key figures (printed, optionally YAML/CSV)
+- `yield`: irradiation per sky patch + obstructed sky description → key figures (printed, optionally YAML/CSV) and plots (HTML)
 - `run`: all steps in one go, writing the intermediate files into an output directory
 Without a subcommand, the config is only assembled, logged and optionally exported.
 """
@@ -14,6 +14,9 @@ import logging
 from pathlib import Path
 
 import yaml
+from bokeh.io import save
+from bokeh.layouts import column
+from bokeh.resources import INLINE
 
 from pv_yield_estimator import __version__
 from pv_yield_estimator.config import apply_overrides, config_from_yaml, config_to_yaml, default_config, log_config, merge_configs, parse_overrides
@@ -24,6 +27,7 @@ from pv_yield_estimator.core.sky import ObstructedSky, SkyDiscretization
 from pv_yield_estimator.core.weather import load_weather, resolve_site
 from pv_yield_estimator.file_format import to_json_text
 from pv_yield_estimator.logging_setup import setup_logging
+from pv_yield_estimator.plotting.interactive import result_plots
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +65,7 @@ def parse_arguments(argv=None):
     run = subparsers.add_parser("run", help="all steps: point cloud + weather file -> key figures, intermediate files in a directory")
     run.add_argument("point_cloud", type=Path, help="point cloud file, e.g. Livox CSV")
     run.add_argument("weather", type=Path, help="weather file, e.g. TMY3 CSV")
-    run.add_argument("-d", "--output-dir", type=Path, required=True, help="directory for obstructed_sky.json, patch_irradiation.json and key_figures.yaml")
+    run.add_argument("-d", "--output-dir", type=Path, required=True, help="directory for obstructed_sky.json, patch_irradiation.json, key_figures.yaml, hourly_panel_radiation.csv and plots.html")
 
     for subparser in subparsers.choices.values():
         add_common_arguments(subparser, defaults=False)
@@ -72,6 +76,7 @@ def add_result_arguments(parser):
     """Options for writing the results of the yield step."""
     parser.add_argument("-o", "--output", type=Path, help="write config, key figures and monthly values to this YAML file")
     parser.add_argument("--hourly-csv", type=Path, metavar="FILE", help="write the hourly radiation on the panel (Wh/m²) to this CSV file")
+    parser.add_argument("--plots", type=Path, metavar="FILE", help="write the interactive plots to this standalone HTML file (BokehJS inlined, works offline)")
 
 
 def assemble_config(config_paths=(), override_items=()):
@@ -115,7 +120,7 @@ def run_irradiation(weather_path, config, sky=None):
     return irradiation
 
 
-def run_yield(irradiation, obstructed_sky, config, output=None, hourly_csv=None):
+def run_yield(irradiation, obstructed_sky, config, output=None, hourly_csv=None, plots=None):
     """Compute the results, log the key figures and monthly values, and write them if requested."""
     result = YieldEstimator(irradiation, obstructed_sky, **config).run()
     key_figures = result.key_figures()
@@ -133,7 +138,16 @@ def run_yield(irradiation, obstructed_sky, config, output=None, hourly_csv=None)
         hourly_csv.parent.mkdir(parents=True, exist_ok=True)
         result.hourly.to_csv(hourly_csv, index_label="hour_start", float_format="%.3f")
         log.info(f"Wrote {hourly_csv}")
+    if plots is not None:
+        write_plots_html(plots, result_plots(result, obstructed_sky, irradiation), title=f"PV yield: tilt {result.tilt_deg}°, azimuth {result.azimuth_deg}°")
     return result
+
+
+def write_plots_html(path, plots, title):
+    """Save Bokeh plots, one below the other, as a standalone HTML file with BokehJS inlined."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save(column(list(plots.values()), sizing_mode="scale_width"), path, resources=INLINE, title=title)
+    log.info(f"Wrote {path}")
 
 
 def main(argv=None):
@@ -154,13 +168,13 @@ def main(argv=None):
     elif args.command == "yield":
         irradiation = PatchIrradiation.from_dict(read_json(args.irradiation), source=str(args.irradiation))
         obstructed_sky = ObstructedSky.from_dict(read_json(args.obstructed_sky), source=str(args.obstructed_sky))
-        run_yield(irradiation, obstructed_sky, config, args.output, args.hourly_csv)
+        run_yield(irradiation, obstructed_sky, config, args.output, args.hourly_csv, args.plots)
     elif args.command == "run":
         obstructed_sky = run_obstruction(args.point_cloud, config)
         write_json(args.output_dir / "obstructed_sky.json", obstructed_sky.to_dict())
         irradiation = run_irradiation(args.weather, config, obstructed_sky.sky)
         write_json(args.output_dir / "patch_irradiation.json", irradiation.to_dict())
-        run_yield(irradiation, obstructed_sky, config, args.output_dir / "key_figures.yaml", args.output_dir / "hourly_panel_radiation.csv")
+        run_yield(irradiation, obstructed_sky, config, args.output_dir / "key_figures.yaml", args.output_dir / "hourly_panel_radiation.csv", args.output_dir / "plots.html")
 
 
 if __name__ == "__main__":

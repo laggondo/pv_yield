@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Built site of the browser app (web/build_site.py) and CLI results
+_site/
+results/

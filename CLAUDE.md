@@ -5,7 +5,7 @@ Project-specific guidance for Claude Code sessions working in this repository.
 ## Project overview
 
 - Read [`concept.md`](concept.md) first: it describes the big picture and is the reference for the rewrite.
-- Layout: the Python package in `src/pv_yield_estimator/` (`core/`: algorithms without user interaction or file access; `plotting/`; `cli/`), the browser front end as static files in `web/`, tests in `tests/`, example configs in `examples/`. `tests/legacy_reference/` records the legacy code's results on the sample data for the regression test (`tests/test_legacy_comparison.py`).
+- Layout: the Python package in `src/pv_yield_estimator/` (`core/`: algorithms without user interaction or file access; `plotting/`; `cli/`), the browser front end as static files in `web/` (Python side: `browser.py`; see `web/README.md`), tests in `tests/`, example configs in `examples/`. `tests/legacy_reference/` records the legacy code's results on the sample data for the regression test (`tests/test_legacy_comparison.py`).
 - `legacy_code/` and `data/` are reference samples only. Don't refactor or extend the legacy code; the program is being rewritten from scratch.
 
 ## Workflow
@@ -15,6 +15,7 @@ Project-specific guidance for Claude Code sessions working in this repository.
 - For the `pv-yield-estimator` command, install the package into that environment with `pip install -e . --no-deps` (dependencies come from conda-forge).
 - The CLI runs the pipeline steps as subcommands (`obstruction`, `irradiation`, `yield`, or all at once with `run`), each reading and writing intermediate files. Config files are given with `-c/--config` (repeatable); single entries are changed with `-m/--mod KEY=VALUE` using dotted keys, e.g. `-m panel.tilt_deg=30 simulation.n_sky_nodes=1000`. Example on the sample data, from the repository root:
   `pv-yield-estimator run data/2026-06-01_22-25-29_red_red.csv data/Freiburg-pvgis-tmy.csv -c examples/sample_config.yaml -d results/sample`
+- Browser app: build with `python web/build_site.py`, serve with `python -m http.server 8000 -d _site`. `examples/sample_obstructed_sky.json` (the sample for the app) is the `obstruction` step's output on the sample scan with `examples/sample_config.yaml`; regenerate it when the file format or the LiDAR method changes.
 
 ## Communicating with the user
 

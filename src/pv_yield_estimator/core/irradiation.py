@@ -124,3 +124,11 @@ def compute_patch_irradiation(weather, sky, latitude, longitude, altitude=0.0, s
     irradiation = PatchIrradiation(sky, hourly.index[0], hourly["ghi"], hourly["dhi"], dni, keys // sky.n_patches, keys % sky.n_patches, direct_vectors, latitude, longitude, altitude, metadata={"weather_source": weather.source, "weather_name": weather.name, "sub_steps_per_hour": n_sub_steps})
     log.info(f"Irradiation per sky patch: {n_hours} hours, {n_sub_steps} sub-steps per hour, {len(keys)} direct entries on {len(np.unique(irradiation.direct_patches))} patches, annual DNI {np.linalg.norm(direct_vectors, axis=1).sum() / 1000:.1f} kWh/m²")
     return irradiation
+
+
+def sun_path_directions(day, latitude, longitude, altitude=0.0, timezone="UTC", step_minutes=5.0):
+    """Sun directions (x east, y north, z up) above the horizon over one day in the given time zone, e.g. for the sky plot."""
+    times = pd.date_range(pd.Timestamp(day).tz_localize(None).tz_localize(timezone), periods=int(round(24 * 60 / step_minutes)), freq=pd.Timedelta(minutes=step_minutes))
+    solar_position = pvlib.solarposition.get_solarposition(times, latitude, longitude, altitude)
+    directions = directions_from_zenith_azimuth(np.radians(solar_position["apparent_zenith"].to_numpy()), np.radians(solar_position["azimuth"].to_numpy()))
+    return directions[directions[:, 2] > 0.0]
