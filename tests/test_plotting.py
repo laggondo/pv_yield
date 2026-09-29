@@ -79,17 +79,26 @@ def test_carpet_plots_hold_the_hourly_values(pipeline):
     for plot, case in zip(layout.children, ("unobstructed", "obstructed")):
         (renderer,) = renderers_of(plot, Image)
         assert case in plot.title.text
+        assert (plot.y_range.start, plot.y_range.end) == (24, 0)   ### midnight at the top
         image = np.asarray(renderer.data_source.data["image"][0])
         assert image.shape == (24, 365)
         assert np.nansum(image) == pytest.approx(result.hourly[f"total_{case}"].sum())
     json.dumps(json_item(layout))
 
 
+def test_plots_leave_touch_and_wheel_to_the_page(pipeline):
+    """No drag or scroll tool is active by default, so swiping over a plot on a phone scrolls the page (checked in the browser smoke test)."""
+    irradiation, obstructed_sky, result = pipeline
+    for plot in [sky_hemisphere_plot(obstructed_sky, irradiation), *carpet_plots(result).children, *monthly_profiles_plot(result).children]:
+        assert plot.toolbar.active_drag is None and plot.toolbar.active_scroll is None
+
+
 def test_monthly_profiles_and_all_plots(pipeline):
-    """Twelve monthly plots with an unobstructed and an obstructed line each; all plots serialize."""
+    """Twelve monthly plots in a wrapping row, each with total, direct and diffuse lines, unobstructed and obstructed; all plots serialize."""
     irradiation, obstructed_sky, result = pipeline
     profiles = monthly_profiles_plot(result)
-    assert len(list(profiles.select({"type": GlyphRenderer}))) == 24
+    assert len(profiles.children) == 12 and profiles.styles["flex-wrap"] == "wrap"
+    assert len(list(profiles.select({"type": GlyphRenderer}))) == 12 * 6
     plots = result_plots(result, obstructed_sky, irradiation)
     assert list(plots) == ["sky_hemisphere", "monthly_profiles", "carpet"]
     for plot in plots.values():
