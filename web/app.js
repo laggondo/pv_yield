@@ -1,5 +1,6 @@
 // User interface of the browser app; the computation runs in Python in a Web Worker (worker.js).
-// The page state is in document.body.dataset.state: loading, ready, busy, computed or error (used by the smoke test).
+// The page state is in document.body.dataset.state: loading, ready, busy, computed or error (used by the smoke test and
+// the red/green status light); progress messages and timings go to the log at the bottom.
 
 const SAMPLE_WEATHER = { url: "samples/Freiburg-pvgis-tmy.csv", source: "pvgis_tmy" };
 const SAMPLE_SKY = { url: "samples/sample_obstructed_sky.json" };
@@ -17,19 +18,23 @@ const loaded = { weather: false, sky: false };
 // Latest result, for inspection in the browser console and the smoke test.
 window.pvYieldApp = { lastResult: null };
 
-// Add a line to the status box and the console.
-function report(message, isError = false) {
-  const line = document.createElement("div");
-  line.textContent = `[${((performance.now() - pageStart) / 1000).toFixed(1)} s] ${message}`;
-  if (isError) line.className = "error";
-  element("status").appendChild(line);
-  element("status").scrollTop = element("status").scrollHeight;
-  (isError ? console.error : console.log)(message);
+const STATE_TEXTS = { loading: "Loading Python and packages ...", ready: "Ready", busy: "Working ...", computed: "Ready", error: "Error" };
+
+// Set the page state and the status text next to the red/green light.
+function setState(state) {
+  document.body.dataset.state = state;
+  element("status-text").textContent = STATE_TEXTS[state];
 }
 
-// Add a line of Python output to the log panel.
+// Add a line to the log panel.
 function appendLog(line) {
   element("log").textContent += line + "\n";
+}
+
+// Add a progress message with the time since page load to the log and the console.
+function report(message) {
+  appendLog(`[${((performance.now() - pageStart) / 1000).toFixed(1)} s] ${message}`);
+  console.log(message);
 }
 
 worker.onmessage = ({ data }) => {
@@ -51,10 +56,14 @@ function call(action, ...args) {
   });
 }
 
-// Report an error and mark the page state.
+// Show an error below the status light, log it and mark the page state.
 function fail(error) {
-  report(`Error: ${error.message ?? error}`, true);
-  document.body.dataset.state = "error";
+  const message = `Error: ${error.message ?? error}`;
+  report(message);
+  console.error(message);
+  element("error").textContent = message;
+  element("error").hidden = false;
+  setState("error");
   updateButtons();
 }
 
@@ -67,11 +76,12 @@ function updateButtons() {
 
 // Run an action while the page is marked busy; errors are reported, not rethrown.
 async function whileBusy(action, finalState = "ready") {
-  document.body.dataset.state = "busy";
+  setState("busy");
+  element("error").hidden = true;
   updateButtons();
   try {
     await action();
-    document.body.dataset.state = finalState;
+    setState(finalState);
   } catch (error) {
     fail(error);
   }
@@ -136,28 +146,27 @@ function currentConfig() {
 
 function showKeyFigures(figures) {
   const pairs = [
-    ["Radiation on the panel, total", "kWh/m²", "annual_total", "_kwh_m2", 1],
-    ["Radiation on the panel, direct", "kWh/m²", "annual_direct", "_kwh_m2", 1],
-    ["Radiation on the panel, diffuse", "kWh/m²", "annual_diffuse", "_kwh_m2", 1],
-    ["PV yield", "kWh", "annual_yield", "_kwh", 1],
-    ["Specific yield", "kWh/kWp", "specific_yield", "_kwh_kwp", 0],
+    ["Radiation on the panel, total (kWh/m²)", "annual_total", "_kwh_m2", 1],
+    ["Radiation on the panel, direct (kWh/m²)", "annual_direct", "_kwh_m2", 1],
+    ["Radiation on the panel, diffuse (kWh/m²)", "annual_diffuse", "_kwh_m2", 1],
+    ["PV yield (kWh)", "annual_yield", "_kwh", 1],
+    ["Specific yield (kWh/kWp)", "specific_yield", "_kwh_kwp", 0],
   ];
   const singles = [
-    ["Shading loss, total", percent(figures.shading_loss)],
-    ["Shading loss, direct", percent(figures.direct_shading_loss)],
+    ["Shading loss, total (%)", format(100 * figures.shading_loss, 1)],
+    ["Shading loss, direct (%)", format(100 * figures.direct_shading_loss, 1)],
     ["Sky view factor of the panel", format(figures.sky_view_factor, 3)],
     ["Sky view factor, horizontal", format(figures.sky_view_factor_horizontal, 3)],
-    ["Rated power", `${format(figures.rated_power_kwp, 3)} kWp`],
+    ["Rated power (kWp)", format(figures.rated_power_kwp, 3)],
   ];
-  element("key-figures").innerHTML = `<tr><th>Annual</th><th class="number">unobstructed</th><th class="number">obstructed</th><th></th></tr>`
-    + pairs.map(([label, unit, prefix, suffix, digits]) => `<tr><td>${label}</td><td class="number">${format(figures[`${prefix}_unobstructed${suffix}`], digits)}</td><td class="number">${format(figures[`${prefix}_obstructed${suffix}`], digits)}</td><td>${unit}</td></tr>`).join("")
-    + singles.map(([label, value]) => `<tr><td>${label}</td><td></td><td class="number">${value}</td><td></td></tr>`).join("");
+  element("key-figures").innerHTML = `<tr><th>Annual</th><th class="number">unobstructed</th><th class="number">obstructed</th></tr>`
+    + pairs.map(([label, prefix, suffix, digits]) => `<tr><td>${label}</td><td class="number">${format(figures[`${prefix}_unobstructed${suffix}`], digits)}</td><td class="number">${format(figures[`${prefix}_obstructed${suffix}`], digits)}</td></tr>`).join("")
+    + singles.map(([label, value]) => `<tr><td>${label}</td><td></td><td class="number">${value}</td></tr>`).join("");
 }
 
 function showMonthly(rows) {
-  element("monthly").innerHTML = `<tr><th>Month</th><th class="number">radiation unobstructed</th><th class="number">radiation obstructed</th><th class="number">yield unobstructed</th><th class="number">yield obstructed</th></tr>`
-    + rows.map(row => `<tr><td>${MONTH_NAMES[row.month - 1]}</td><td class="number">${format(row.total_unobstructed, 2)}</td><td class="number">${format(row.total_obstructed, 2)}</td><td class="number">${format(row.yield_unobstructed, 3)}</td><td class="number">${format(row.yield_obstructed, 3)}</td></tr>`).join("")
-    + `<tr><td></td><td class="number">kWh/m²/d</td><td class="number">kWh/m²/d</td><td class="number">kWh/d</td><td class="number">kWh/d</td></tr>`;
+  element("monthly").innerHTML = `<tr><th>Month</th><th class="number">radiation unobstructed (kWh/m²/d)</th><th class="number">radiation obstructed (kWh/m²/d)</th><th class="number">yield unobstructed (kWh/d)</th><th class="number">yield obstructed (kWh/d)</th></tr>`
+    + rows.map(row => `<tr><td>${MONTH_NAMES[row.month - 1]}</td><td class="number">${format(row.total_unobstructed, 2)}</td><td class="number">${format(row.total_obstructed, 2)}</td><td class="number">${format(row.yield_unobstructed, 3)}</td><td class="number">${format(row.yield_obstructed, 3)}</td></tr>`).join("");
 }
 
 async function showPlots(plots) {
@@ -210,7 +219,7 @@ try {
   report(`Loading BokehJS ${versions.bokeh}`);
   await loadScript(`https://cdn.bokeh.org/bokeh/release/bokeh-${versions.bokeh}.min.js`);
   pythonReady = true;
-  document.body.dataset.state = "ready";
+  setState("ready");
   report("Ready: load a weather file and an obstructed sky description, or the sample data");
   updateButtons();
 } catch (error) {
