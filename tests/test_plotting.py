@@ -72,17 +72,23 @@ def test_sun_path_reaches_expected_noon_elevation():
 
 
 def test_carpet_plots_hold_the_hourly_values(pipeline):
-    """Each carpet image is hour of day × day of year and sums to the annual radiation on the panel."""
+    """Each carpet plot shows day of year (downwards) × hour of day, sums to the annual radiation on the panel, and covers 0–24 h without a gap."""
     _, _, result = pipeline
     layout = carpet_plots(result)
-    assert len(renderers_of(layout, Image)) == 2
+    assert layout.styles["flex-wrap"] == "wrap"
+    offset = result.hourly.index[0].minute / 60 + result.hourly.index[0].second / 3600
+    assert offset > 0.5   ### PVGIS hours start at xx:41, so the last hour of a day reaches past 24:00
     for plot, case in zip(layout.children, ("unobstructed", "obstructed")):
-        (renderer,) = renderers_of(plot, Image)
-        assert case in plot.title.text
-        assert (plot.y_range.start, plot.y_range.end) == (24, 0)   ### midnight at the top
-        image = np.asarray(renderer.data_source.data["image"][0])
-        assert image.shape == (24, 365)
+        wrapped, main = sorted(renderers_of(plot, Image), key=lambda renderer: renderer.glyph.x)
+        assert case in plot.title.text.lower()
+        assert plot.y_range.start > plot.y_range.end   ### 1 January at the top
+        assert (plot.x_range.start, plot.x_range.end) == (0, 24)
+        image = np.asarray(main.data_source.data["image"][0])
+        assert image.shape == (365, 24)
         assert np.nansum(image) == pytest.approx(result.hourly[f"total_{case}"].sum())
+        ### The main image starts at the first hour start; the shifted copy (one day later, 24 h earlier) fills 0:00 up to there.
+        assert main.glyph.x == pytest.approx(offset) and main.glyph.dw == 24
+        assert wrapped.glyph.x + wrapped.glyph.dw == pytest.approx(offset) and wrapped.glyph.y == main.glyph.y + 1
     json.dumps(json_item(layout))
 
 
