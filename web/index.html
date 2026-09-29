@@ -14,7 +14,8 @@
 </header>
 
 <section id="status-section">
-  <div id="status" aria-live="polite"></div>
+  <div id="status" aria-live="polite"><span id="status-light"></span><span id="status-text">Loading Python and packages ...</span></div>
+  <div id="error" class="error" hidden></div>
 </section>
 
 <section>
@@ -53,14 +54,14 @@
 
 <section id="results" hidden>
   <h2>Key figures</h2>
-  <table id="key-figures"></table>
+  <div class="table-wrap"><table id="key-figures"></table></div>
   <h2>Average daily values per month</h2>
-  <table id="monthly"></table>
+  <div class="table-wrap"><table id="monthly"></table></div>
   <h2>Sky hemisphere</h2>
-  <p class="hint">Annual radiation per sky patch (direct normal plus diffuse from the patch), independent of the panel orientation; obstructed patches hatched. Hover or tap a patch for its values.</p>
+  <p class="hint">Annual radiation per sky patch (direct normal plus diffuse from the patch), independent of the panel orientation; obstructed patches hatched. Tap or hover over a patch for its values; to pan or zoom, switch the tools on in the plot's toolbar.</p>
   <div id="plot-sky_hemisphere" class="plot"></div>
   <h2>Average daily profile per month</h2>
-  <p class="hint">Total radiation on the panel in W/m², unobstructed (dashed) and obstructed.</p>
+  <p class="hint">Radiation on the panel in W/m² over the hour of the day: total (black), direct (orange) and diffuse (blue), each unobstructed (dashed) and obstructed (solid).</p>
   <div id="plot-monthly_profiles" class="plot"></div>
   <h2>Carpet plots</h2>
   <p class="hint">Hourly total radiation on the panel over the year.</p>
@@ -69,7 +70,7 @@
 
 <section>
   <details>
-    <summary>Log</summary>
+    <summary>Log (loading steps, timings, Python output)</summary>
     <pre id="log"></pre>
   </details>
 </section>

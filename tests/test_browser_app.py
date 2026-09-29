@@ -77,9 +77,24 @@ def test_build_site(tmp_path):
     assert not (site / "build_site.py").exists()
 
 
+def swipe_up_over(page, selector):
+    """Swipe upwards with one finger over the middle of an element (Chrome DevTools touch events); returns the page's scrollY before and after."""
+    page.locator(selector).scroll_into_view_if_needed()
+    box = page.locator(selector).bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + min(box["height"], 400) / 2 + 150
+    scroll_before = page.evaluate("window.scrollY")
+    session = page.context.new_cdp_session(page)
+    session.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y}]})
+    for step in range(1, 11):
+        session.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x, "y": y - 30 * step}]})
+    session.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+    page.wait_for_timeout(1000)
+    return scroll_before, page.evaluate("window.scrollY")
+
+
 @pytest.mark.skipif(os.environ.get("PV_YIELD_BROWSER_TEST") != "1", reason="headless browser test; set PV_YIELD_BROWSER_TEST=1 (needs Playwright and network access to the Pyodide and Bokeh CDNs)")
 def test_browser_page_computes_sample(tmp_path, session):
-    """Headless Chromium: the page loads Pyodide, computes the sample and shows the same key figures as the native session."""
+    """Headless Chromium as a phone: the page loads Pyodide, computes the sample and shows the same key figures as the native session; a swipe over a plot scrolls the page."""
     sync_api = pytest.importorskip("playwright.sync_api")
     site = load_build_site_module().build_site(tmp_path / "site")
 
@@ -101,7 +116,7 @@ def test_browser_page_computes_sample(tmp_path, session):
     expected = json.loads(session.compute(json.dumps({"panel": PANEL})))["key_figures"]
     with sync_api.sync_playwright() as playwright:
         browser = playwright.chromium.launch(**launch_options)
-        context = browser.new_context()
+        context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
         context.route(f"{SITE_ORIGIN}/**", serve_site_file)
         page = context.new_page()
         messages = []
@@ -109,15 +124,17 @@ def test_browser_page_computes_sample(tmp_path, session):
         try:
             page.goto(f"{SITE_ORIGIN}/")
             page.wait_for_function("['ready', 'error'].includes(document.body.dataset.state)", timeout=300_000)
-            assert page.evaluate("document.body.dataset.state") == "ready", page.inner_text("#status")
+            assert page.evaluate("document.body.dataset.state") == "ready", page.text_content("#log")
             page.click("#load-samples")
             page.wait_for_function("!document.getElementById('compute').disabled || document.body.dataset.state === 'error'", timeout=120_000)
             page.click("#compute")
             page.wait_for_function("['computed', 'error'].includes(document.body.dataset.state)", timeout=300_000)
-            assert page.evaluate("document.body.dataset.state") == "computed", page.inner_text("#status")
+            assert page.evaluate("document.body.dataset.state") == "computed", page.text_content("#log")
             key_figures = page.evaluate("window.pvYieldApp.lastResult.key_figures")
             for plot in ("sky_hemisphere", "monthly_profiles", "carpet"):
                 assert page.locator(f"#plot-{plot} > *").count() > 0, f"plot {plot} not rendered"
+            scroll_before, scroll_after = swipe_up_over(page, "#plot-sky_hemisphere")
+            assert scroll_after > scroll_before + 100, f"a swipe over the sky plot did not scroll the page (scrollY {scroll_before} -> {scroll_after})"
             page.screenshot(path=tmp_path / "page.png", full_page=True)
         finally:
             print("\n".join(messages))

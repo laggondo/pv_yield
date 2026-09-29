@@ -2,8 +2,10 @@ body { font-family: system-ui, sans-serif; margin: 0 auto; padding: 16px; max-wi
 h1 { font-size: 1.5rem; margin-bottom: 0.2em; }
 h2 { font-size: 1.15rem; margin-top: 1.6em; }
 header p, .hint { color: #555; margin-top: 0; }
-#status { font-family: ui-monospace, monospace; font-size: 0.85rem; background: #f4f4f4; padding: 8px; white-space: pre-wrap; max-height: 12em; overflow-y: auto; }
-.error { color: #b00020; }
+#status { display: flex; align-items: center; gap: 8px; font-size: 0.95rem; }
+#status-light { width: 14px; height: 14px; border-radius: 50%; background: #c62828; flex: none; }
+body[data-state="ready"] #status-light, body[data-state="computed"] #status-light { background: #2e7d32; }
+.error { color: #b00020; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 0.85rem; }
 .inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
 fieldset { border: 1px solid #ccc; border-radius: 6px; }
 label { display: block; margin: 6px 0; }
@@ -14,9 +16,11 @@ label input[type="file"] { display: block; margin-top: 2px; max-width: 100%; }
 button { padding: 8px 16px; font-size: 1rem; border-radius: 6px; border: 1px solid #888; background: #f4f4f4; cursor: pointer; }
 button.primary { background: #d95f02; border-color: #d95f02; color: #fff; }
 button:disabled { opacity: 0.5; cursor: default; }
+.table-wrap { overflow-x: auto; }
 table { border-collapse: collapse; font-size: 0.9rem; margin: 8px 0; }
 th, td { padding: 3px 12px 3px 0; text-align: left; border-bottom: 1px solid #eee; }
 td.number, th.number { text-align: right; font-variant-numeric: tabular-nums; }
 .plot { width: 100%; }
 #log { font-size: 0.75rem; max-height: 30em; overflow: auto; background: #f4f4f4; padding: 8px; }
 footer { margin-top: 2em; font-size: 0.8rem; color: #666; }
+#plot-sky_hemisphere { max-width: 640px; }
