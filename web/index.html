@@ -20,6 +20,7 @@
 
 <section>
   <h2>Inputs</h2>
+  <!-- The file inputs have no accept filter: Android greys out CSV and YAML files for such filters (it matches file types, not names); the formats are detected from the content. -->
   <div class="inputs">
     <fieldset>
       <legend>Site</legend>
@@ -40,7 +41,7 @@
         <button id="weather-download" disabled>Download (Open-Meteo)</button>
       </label>
       <div class="summary">Or <a id="pvgis-link" href="https://re.jrc.ec.europa.eu/pvg_tools/en/" target="_blank" rel="noopener">download the PVGIS typical year</a> for the site (satellite data, usually more accurate; the file lands in your downloads, then load it below).</div>
-      <label>Weather file <input type="file" id="weather-file" accept=".csv,.txt,.json"></label>
+      <label>Weather file <input type="file" id="weather-file"></label>
       <label>Format
         <select id="weather-source">
           <option value="auto">detect automatically</option>
@@ -54,10 +55,10 @@
     </fieldset>
     <fieldset>
       <legend>Obstructed sky description</legend>
-      <label>JSON file (from the CLI or saved here) <input type="file" id="sky-file" accept=".json"></label>
+      <label>JSON file (from the CLI or saved here) <input type="file" id="sky-file"></label>
       <details id="lidar">
         <summary>… or compute it from a LiDAR point cloud (computers; large files)</summary>
-        <label>Point cloud (Livox CSV) <input type="file" id="lidar-file" accept=".csv,.txt"></label>
+        <label>Point cloud (Livox CSV) <input type="file" id="lidar-file"></label>
         <label>Scanner heading (° compass azimuth of the scanner's x axis) <input type="number" id="scanner_heading_deg" value="0" step="any"></label>
         <div class="row">
           <label>Panel offset east (m) <input type="number" id="offset-east" value="0" step="any"></label>
@@ -92,7 +93,7 @@
   </div>
   <div class="buttons secondary">
     <button id="config-save" class="small" disabled>Save config (YAML)</button>
-    <label class="button small">Load config (YAML) <input type="file" id="config-file" accept=".yaml,.yml" hidden></label>
+    <label class="button small">Load config (YAML) <input type="file" id="config-file" hidden></label>
     <button id="forget" class="small">Forget stored inputs</button>
   </div>
   <p class="hint">Loaded inputs are kept in this browser for your next visit. To move them to another device, save them as files (buttons above) and load them there.</p>
