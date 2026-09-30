@@ -3,9 +3,10 @@
 Units: radiation per patch and year in kWh/m², hourly radiation on the panel in Wh/m² (equal to the mean irradiance in W/m²).
 """
 
+import contourpy
 import numpy as np
 import pandas as pd
-from bokeh.models import ColorBar, ColumnDataSource, FixedTicker, HoverTool, Legend, LegendItem, LinearColorMapper, Row
+from bokeh.models import ColorBar, ColumnDataSource, DatetimeTickFormatter, FixedTicker, HoverTool, Legend, LegendItem, LinearColorMapper, Row
 from bokeh.palettes import Inferno256
 from bokeh.plotting import figure
 
@@ -16,6 +17,11 @@ from pv_yield_estimator.core.sky import zenith_azimuth_from_directions
 ### Days of the sun paths drawn into the sky plot: summer solstice, equinox, winter solstice.
 SUN_PATH_DAYS = (("06-21", "21 June", "#2ca02c"), ("03-20", "20 March / 23 September", "#17becf"), ("12-21", "21 December", "#9467bd"))
 CASE_DASHES = {"unobstructed": "dashed", "obstructed": "solid"}
+### Daily bars: one hue, light for the unobstructed radiation (the potential) behind dark for the obstructed.
+CASE_BAR_COLORS = {"unobstructed": "#f6c49a", "obstructed": "#d95f02"}
+### Markers in the orientation heatmap, and its contour lines at these fractions of the best annual radiation.
+BEST_MARKER_COLOR, PANEL_MARKER_COLOR = "#00e5ff", "#ffffff"
+ORIENTATION_CONTOUR_FRACTIONS = (0.95, 0.9)
 COMPONENT_COLORS = {"total": "#222222", "direct": "#d95f02", "diffuse": "#1f78b4"}
 MONTH_NAMES = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 OBSTRUCTED_HATCH_COLOR = "#1f77b4"
@@ -158,6 +164,66 @@ def monthly_profiles_plot(result, width=250, height=200):
     return Row(children=plots, styles={"flex-wrap": "wrap"}, sizing_mode="stretch_width")
 
 
+def daily_bars_plot(result, width=900, height=320):
+    """Radiation on the panel per day over the year (kWh/m²): one bar per day, unobstructed (light) behind obstructed (dark)."""
+    daily = result.daily()
+    ### Bars centred on noon of each day, one day wide minus a small gap; time stamps without time zone for the date axis.
+    source = ColumnDataSource({"day": daily.index.tz_localize(None) + pd.Timedelta(hours=12), "date": daily.index.strftime("%d %b"),
+                               **{case: daily[f"total_{case}"].to_numpy() for case in SHADING_CASES}})
+    plot = figure(title="Radiation on the panel per day", x_axis_type="datetime", width=width, height=height, sizing_mode="scale_width", y_axis_label="kWh/m² per day", **INACTIVE_TOOLS)
+    bars = {case: plot.vbar(x="day", top=case, width=pd.Timedelta(hours=20), source=source, color=CASE_BAR_COLORS[case]) for case in SHADING_CASES}
+    plot.add_tools(HoverTool(renderers=[bars["unobstructed"]], tooltips=[("date", "@date"), ("unobstructed", "@unobstructed{0.00} kWh/m²"), ("obstructed", "@obstructed{0.00} kWh/m²")], mode="vline"))
+    plot.y_range.start = 0
+    plot.xaxis.formatter = DatetimeTickFormatter(months="%b", days="%d %b")
+    plot.xgrid.visible = False
+    plot.add_layout(Legend(items=[LegendItem(label=case, renderers=[bars[case]]) for case in SHADING_CASES], location="top_left", orientation="horizontal", background_fill_alpha=0.7))
+    return plot
+
+
+def orientation_contours(grid, case):
+    """Contour lines of the orientation grid at `ORIENTATION_CONTOUR_FRACTIONS` of the best radiation: list of (fraction, azimuths, tilts)."""
+    if min(grid.radiation[case].shape) < 2:
+        return []
+    generator = contourpy.contour_generator(grid.azimuths_deg, grid.tilts_deg, grid.radiation[case], line_type="Separate")
+    best = grid.radiation[case].max()
+    return [(fraction, line[:, 0], line[:, 1]) for fraction in ORIENTATION_CONTOUR_FRACTIONS for line in generator.lines(fraction * best) if len(line) > 1]
+
+
+def orientation_plots(result, width=450, height=300):
+    """Annual radiation on the panel over panel azimuth and tilt (kWh/m²), unobstructed and obstructed with one colour scale; the best orientation and the panel's are marked.
+
+    Dotted contour lines enclose the orientations within 95 % and 90 % of each plot's best. The two plots sit in a row that wraps (side by side on a computer, one below the other on a phone).
+    """
+    grid = result.orientation_grid
+    azimuth_step = grid.azimuths_deg[1] - grid.azimuths_deg[0] if len(grid.azimuths_deg) > 1 else 1.0
+    tilt_step = grid.tilts_deg[1] - grid.tilts_deg[0] if len(grid.tilts_deg) > 1 else 1.0
+    high = float(grid.radiation["unobstructed"].max())
+    color_mapper = LinearColorMapper(palette=Inferno256, low=0.0, high=high)
+    plots = []
+    for case in SHADING_CASES:
+        best = grid.best(case)
+        plot = figure(title=f"{case.capitalize()}: best tilt {best['tilt_deg']:g}°, azimuth {best['azimuth_deg']:g}°, {best['radiation_kwh_m2']:.0f} kWh/m²",
+                      x_range=plots[0].x_range if plots else (0, 360), y_range=plots[0].y_range if plots else (0, 90), width=width, height=height, sizing_mode="scale_width",
+                      x_axis_label="panel azimuth (°, compass: 90 = east, 180 = south)", y_axis_label="panel tilt (°)", **INACTIVE_TOOLS)
+        image = plot.image(image=[grid.radiation[case]], x=grid.azimuths_deg[0] - azimuth_step / 2, y=grid.tilts_deg[0] - tilt_step / 2, dw=grid.azimuths_deg[-1] - grid.azimuths_deg[0] + azimuth_step,
+                           dh=grid.tilts_deg[-1] - grid.tilts_deg[0] + tilt_step, color_mapper=color_mapper)
+        plot.add_tools(HoverTool(renderers=[image], tooltips=[("azimuth", "$x{0}°"), ("tilt", "$y{0}°"), ("annual radiation", "@image{0} kWh/m²")]))
+        for fraction, x, y in orientation_contours(grid, case):
+            plot.line(x, y, line_color="white", line_dash="dotted", line_width=1.5)
+            plot.text([x[len(x) // 2]], [y[len(y) // 2]], text=[f"{fraction:.0%}"], text_color="white", text_font_size="8pt", text_align="center", text_baseline="bottom")
+        markers = [plot.scatter([best["azimuth_deg"]], [best["tilt_deg"]], marker="star", size=16, fill_color=BEST_MARKER_COLOR, line_color="black")]
+        labels = ["best"]
+        plot.scatter([result.azimuth_deg], [result.tilt_deg], marker="circle", size=10, fill_color=PANEL_MARKER_COLOR, line_color="black")
+        markers.append(plot.renderers[-1])
+        labels.append("panel")
+        plot.add_layout(Legend(items=[LegendItem(label=label, renderers=[marker]) for label, marker in zip(labels, markers)], location="top_right", background_fill_alpha=0.7, label_text_font_size="8pt"))
+        plot.xaxis.ticker = FixedTicker(ticks=list(range(0, 361, 45)))
+        plot.add_layout(ColorBar(color_mapper=color_mapper, title="annual radiation on the panel (kWh/m²)", orientation="horizontal", height=12), "below")
+        plots.append(plot)
+    return Row(children=plots, styles={"flex-wrap": "wrap", "gap": "16px"}, sizing_mode="stretch_width")
+
+
 def result_plots(result, obstructed_sky, irradiation):
     """All plots of a yield result by name, in display order; each value is a Bokeh model for `json_item` or `save`."""
-    return {"sky_hemisphere": sky_hemisphere_plot(obstructed_sky, irradiation), "monthly_profiles": monthly_profiles_plot(result), "carpet": carpet_plots(result)}
+    return {"sky_hemisphere": sky_hemisphere_plot(obstructed_sky, irradiation), "monthly_profiles": monthly_profiles_plot(result), "daily_bars": daily_bars_plot(result),
+            "carpet": carpet_plots(result), "orientation": orientation_plots(result)}

@@ -48,7 +48,7 @@ def test_session_matches_cli_sample_config(session):
     assert result["key_figures"]["sky_view_factor_horizontal"] == pytest.approx(0.5500, abs=1e-4)
     assert "irradiation per sky patch" in result["timings"]
     assert [row["month"] for row in result["monthly_daily_average"]] == list(range(1, 13))
-    assert set(result["plots"]) == {"sky_hemisphere", "monthly_profiles", "carpet"}
+    assert set(result["plots"]) == {"sky_hemisphere", "monthly_profiles", "daily_bars", "carpet", "orientation"}
     tilted = json.loads(session.compute(json.dumps({"panel": PANEL | {"tilt_deg": 35.0}})))
     assert "irradiation per sky patch" not in tilted["timings"]
     assert tilted["key_figures"]["annual_total_unobstructed_kwh_m2"] > result["key_figures"]["annual_total_unobstructed_kwh_m2"]

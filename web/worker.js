@@ -5,7 +5,7 @@
 // Pinned versions: Pyodide 314.0.7 bundles numpy, pandas, scipy, pyyaml, pygments (for rich) and bokeh 3.9.0 (Python 3.14); pvlib comes from PyPI.
 const PYODIDE_VERSION = "314.0.7";
 const PVLIB_VERSION = "0.16.1";
-const BUNDLED_PACKAGES = ["micropip", "numpy", "pandas", "scipy", "pyyaml", "bokeh", "pygments"];
+const BUNDLED_PACKAGES = ["micropip", "numpy", "pandas", "scipy", "pyyaml", "bokeh", "pygments", "contourpy"];
 const PYPI_PACKAGES = [`pvlib==${PVLIB_VERSION}`, "rich"];
 
 // ?pyodide=<base URL> (passed on from the page URL) loads Pyodide from elsewhere, e.g. a self-hosted copy.
