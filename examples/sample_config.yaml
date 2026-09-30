@@ -1,10 +1,13 @@
 ### Config for the sample data in data/ (LiDAR scan and PVGIS typical meteorological year for Freiburg), with the settings of the
 ### legacy code. Run from the repository root:
 ###   pv-yield-estimator run data/2026-06-01_22-25-29_red_red.csv data/Freiburg-pvgis-tmy.csv -c examples/sample_config.yaml -d results/sample
+### Without the weather file, `run` downloads weather data for the site (site.latitude/longitude or site.query).
 format_version: 1
-site: {}                            ### latitude/longitude/altitude; taken from the weather file if not given
+site: {}                            ### latitude/longitude/altitude, or query: "place name or address"; taken from the weather file if not given
 weather:
   source: auto                      ### file format: auto (detected), pvgis_tmy (as data/Freiburg-pvgis-tmy.csv), open_meteo or tmy3 (e.g. MeteoNorm)
+  download_service: auto            ### for downloads: auto (PVGIS, else Open-Meteo), pvgis_tmy or open_meteo
+  n_years: 10                       ### Open-Meteo: number of past years averaged into a typical year
 sky_obstruction:
   method: lidar
   lidar:
@@ -23,4 +26,7 @@ orientation:
   compare: [[30, 180], [30, 90], [30, 270], [90, 180]]   ### further orientations [tilt, azimuth] in the comparison table
 simulation:
   n_sky_nodes: 500                  ### approximate number of sky nodes (default 500); about twice as many sky patches
-output: {}
+output:
+  plots_html: true                  ### interactive plots (plots.html)
+  plots_png: true                   ### static plots (plot_*.png)
+  pdf_report: true                  ### report.pdf
