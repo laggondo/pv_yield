@@ -133,7 +133,7 @@ def test_orientation_plots(pipeline):
     for plot, case in zip(layout.children, ("unobstructed", "obstructed")):
         (image,) = renderers_of(plot, Image)
         np.testing.assert_allclose(image.data_source.data["image"][0], grid.radiation[case])
-        assert f"azimuth {grid.best(case)['azimuth_deg']:g}°" in plot.title.text
+        assert f"/ {grid.best(case)['azimuth_deg']:g}°" in plot.title.text and plot.sizing_mode is None   ### fixed size, so the row wraps on a phone
     contours = orientation_contours(grid, "unobstructed")
     assert {fraction for fraction, _, _ in contours} == {0.95, 0.9}
     json.dumps(json_item(layout))

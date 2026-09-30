@@ -137,7 +137,8 @@ def orientation_figure(result, figsize=(11.0, 4.5)):
         mappable = axes.pcolormesh(grid.azimuths_deg, grid.tilts_deg, grid.radiation[case], cmap=COLORMAP, norm=norm, shading="nearest")
         for fraction, x, y in orientation_contours(grid, case):
             axes.plot(x, y, color="white", linestyle="dotted", linewidth=1.2)
-            axes.text(x[len(x) // 2], y[len(y) // 2], f"{fraction:.0%}", color="white", fontsize=7, ha="center", va="bottom")
+            top = np.argmax(y)   ### label at the top of each line, so the labels of nested lines don't overlap
+            axes.text(x[top], y[top], f"{fraction:.0%}", color="white", fontsize=7, ha="center", va="bottom")
         axes.plot(best["azimuth_deg"], best["tilt_deg"], marker="*", markersize=14, color=BEST_MARKER_COLOR, markeredgecolor="black", linestyle="none", label="best")
         axes.plot(result.azimuth_deg, result.tilt_deg, marker="o", markersize=8, color=PANEL_MARKER_COLOR, markeredgecolor="black", linestyle="none", label="panel")
         axes.set_xticks(range(0, 361, 45))

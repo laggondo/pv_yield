@@ -190,10 +190,10 @@ def orientation_contours(grid, case):
     return [(fraction, line[:, 0], line[:, 1]) for fraction in ORIENTATION_CONTOUR_FRACTIONS for line in generator.lines(fraction * best) if len(line) > 1]
 
 
-def orientation_plots(result, width=450, height=300):
+def orientation_plots(result, width=350, height=340):
     """Annual radiation on the panel over panel azimuth and tilt (kWh/m²), unobstructed and obstructed with one colour scale; the best orientation and the panel's are marked.
 
-    Dotted contour lines enclose the orientations within 95 % and 90 % of each plot's best. The two plots sit in a row that wraps (side by side on a computer, one below the other on a phone).
+    Dotted contour lines enclose the orientations within 95 % and 90 % of each plot's best. The two plots have a fixed size and sit in a row that wraps (side by side on a computer, one below the other on a phone), like the carpet plots.
     """
     grid = result.orientation_grid
     azimuth_step = grid.azimuths_deg[1] - grid.azimuths_deg[0] if len(grid.azimuths_deg) > 1 else 1.0
@@ -203,23 +203,24 @@ def orientation_plots(result, width=450, height=300):
     plots = []
     for case in SHADING_CASES:
         best = grid.best(case)
-        plot = figure(title=f"{case.capitalize()}: best tilt {best['tilt_deg']:g}°, azimuth {best['azimuth_deg']:g}°, {best['radiation_kwh_m2']:.0f} kWh/m²",
-                      x_range=plots[0].x_range if plots else (0, 360), y_range=plots[0].y_range if plots else (0, 90), width=width, height=height, sizing_mode="scale_width",
-                      x_axis_label="panel azimuth (°, compass: 90 = east, 180 = south)", y_axis_label="panel tilt (°)", **INACTIVE_TOOLS)
+        plot = figure(title=f"{case.capitalize()}: best {best['tilt_deg']:g}° / {best['azimuth_deg']:g}°, {best['radiation_kwh_m2']:.0f} kWh/m²",
+                      x_range=plots[0].x_range if plots else (0, 360), y_range=plots[0].y_range if plots else (0, 90), width=width, height=height,
+                      x_axis_label="panel azimuth (°, 90 = east, 180 = south)", y_axis_label="panel tilt (°)", **INACTIVE_TOOLS)
         image = plot.image(image=[grid.radiation[case]], x=grid.azimuths_deg[0] - azimuth_step / 2, y=grid.tilts_deg[0] - tilt_step / 2, dw=grid.azimuths_deg[-1] - grid.azimuths_deg[0] + azimuth_step,
                            dh=grid.tilts_deg[-1] - grid.tilts_deg[0] + tilt_step, color_mapper=color_mapper)
         plot.add_tools(HoverTool(renderers=[image], tooltips=[("azimuth", "$x{0}°"), ("tilt", "$y{0}°"), ("annual radiation", "@image{0} kWh/m²")]))
         for fraction, x, y in orientation_contours(grid, case):
             plot.line(x, y, line_color="white", line_dash="dotted", line_width=1.5)
-            plot.text([x[len(x) // 2]], [y[len(y) // 2]], text=[f"{fraction:.0%}"], text_color="white", text_font_size="8pt", text_align="center", text_baseline="bottom")
+            top = np.argmax(y)   ### label at the top of each line, so the labels of nested lines don't overlap
+            plot.text([x[top]], [y[top]], text=[f"{fraction:.0%}"], text_color="white", text_font_size="8pt", text_align="center", text_baseline="bottom")
         markers = [plot.scatter([best["azimuth_deg"]], [best["tilt_deg"]], marker="star", size=16, fill_color=BEST_MARKER_COLOR, line_color="black")]
         labels = ["best"]
         plot.scatter([result.azimuth_deg], [result.tilt_deg], marker="circle", size=10, fill_color=PANEL_MARKER_COLOR, line_color="black")
         markers.append(plot.renderers[-1])
         labels.append("panel")
         plot.add_layout(Legend(items=[LegendItem(label=label, renderers=[marker]) for label, marker in zip(labels, markers)], location="top_right", background_fill_alpha=0.7, label_text_font_size="8pt"))
-        plot.xaxis.ticker = FixedTicker(ticks=list(range(0, 361, 45)))
-        plot.add_layout(ColorBar(color_mapper=color_mapper, title="annual radiation on the panel (kWh/m²)", orientation="horizontal", height=12), "below")
+        plot.xaxis.ticker = FixedTicker(ticks=list(range(0, 361, 90)))
+        plot.add_layout(ColorBar(color_mapper=color_mapper, title="annual radiation (kWh/m²)", orientation="horizontal", height=12), "below")
         plots.append(plot)
     return Row(children=plots, styles={"flex-wrap": "wrap", "gap": "16px"}, sizing_mode="stretch_width")
 
