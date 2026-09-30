@@ -170,13 +170,14 @@ def daily_bars_plot(result, width=900, height=320):
     ### Bars centred on noon of each day, one day wide minus a small gap; time stamps without time zone for the date axis.
     source = ColumnDataSource({"day": daily.index.tz_localize(None) + pd.Timedelta(hours=12), "date": daily.index.strftime("%d %b"),
                                **{case: daily[f"total_{case}"].to_numpy() for case in SHADING_CASES}})
-    plot = figure(title="Radiation on the panel per day", x_axis_type="datetime", width=width, height=height, sizing_mode="scale_width", y_axis_label="kWh/m² per day", **INACTIVE_TOOLS)
+    ### Fixed height and the page's width, so the bars stay readable on a phone.
+    plot = figure(title="Radiation on the panel per day", x_axis_type="datetime", width=width, height=height, sizing_mode="stretch_width", y_axis_label="kWh/m² per day", **INACTIVE_TOOLS)
     bars = {case: plot.vbar(x="day", top=case, width=pd.Timedelta(hours=20), source=source, color=CASE_BAR_COLORS[case]) for case in SHADING_CASES}
     plot.add_tools(HoverTool(renderers=[bars["unobstructed"]], tooltips=[("date", "@date"), ("unobstructed", "@unobstructed{0.00} kWh/m²"), ("obstructed", "@obstructed{0.00} kWh/m²")], mode="vline"))
     plot.y_range.start = 0
     plot.xaxis.formatter = DatetimeTickFormatter(months="%b", days="%d %b")
     plot.xgrid.visible = False
-    plot.add_layout(Legend(items=[LegendItem(label=case, renderers=[bars[case]]) for case in SHADING_CASES], location="top_left", orientation="horizontal", background_fill_alpha=0.7))
+    plot.add_layout(Legend(items=[LegendItem(label=case, renderers=[bars[case]]) for case in SHADING_CASES], orientation="horizontal", border_line_alpha=0), "below")
     return plot
 
 
