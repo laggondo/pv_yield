@@ -97,7 +97,7 @@ def test_browser_helpers():
     assert json.loads(site_search("Freiburg")).startswith("https://nominatim.openstreetmap.org/search?q=Freiburg")
     assert json.loads(site_search_results(NOMINATIM_ANSWER))[0]["latitude"] == 47.996
     downloads = json.loads(weather_downloads(48.0, 7.85, json.dumps({"n_years": 3, "source": "auto"})))
-    assert [candidate["service"] for candidate in downloads["candidates"]] == ["open_meteo"] and "re.jrc.ec.europa.eu" in downloads["pvgis_url"]
+    assert [candidate["service"] for candidate in downloads["candidates"]] == ["open_meteo"] and "re.jrc.ec.europa.eu" in downloads["pvgis_url"] and downloads["pvgis_url"].endswith("&browser=1")
     config = {"panel": {"tilt_deg": None, "azimuth_deg": 180}, "orientation": {"compare": [[30, 90]]}}
     assert json.loads(config_json_from_yaml(config_yaml_from_json(json.dumps(config))))["panel"] == config["panel"]
 
@@ -185,7 +185,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.fill("#site-query", "Freiburg")
             page.click("#site-search")
             wait_idle()
-            assert page.input_value("#site-latitude") == "47.99600" and "lat=47.996" in page.get_attribute("#pvgis-link", "href")
+            assert page.input_value("#site-latitude") == "47.99600" and "lat=47.9960" in page.get_attribute("#pvgis-link", "href") and page.get_attribute("#pvgis-link", "href").endswith("browser=1")
             page.click("#weather-download")
             wait_idle()
             assert "Open-Meteo" in page.text_content("#weather-summary")

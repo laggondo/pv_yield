@@ -304,11 +304,13 @@ function setSite(latitude, longitude) {
   remember("form", formValues());
 }
 
-// Point the PVGIS link to the site's typical year, if the site is set.
+// Point the PVGIS link to the site's typical year, if the site is set; PVGIS sends it as a file download, so no new tab
+// (without a site, the link opens the PVGIS website in a new tab).
 async function updatePvgisLink() {
   const latitude = numberOrNull("site-latitude"), longitude = numberOrNull("site-longitude");
   if (!pythonReady || latitude === null || longitude === null) return;
   element("pvgis-link").href = (await call("weatherDownloads", latitude, longitude, { n_years: numberOrNull("weather-years") ?? 10 })).pvgis_url;
+  element("pvgis-link").removeAttribute("target");
 }
 
 let foundPlaces = [];

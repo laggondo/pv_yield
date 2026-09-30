@@ -4,7 +4,7 @@ The core does no network access: it builds the request URLs and names the weathe
 the front ends fetch (the CLI with urllib, the browser with `fetch`) and keep the response as a file, so later steps
 can run offline. Services:
 - `pvgis_tmy`: PVGIS typical meteorological year (satellite data, preferred where available). The PVGIS API sends no
-  CORS headers, so a browser page cannot fetch it; the browser offers the URL as a link for a manual download instead.
+  CORS headers, so a browser page cannot fetch it; the browser offers the URL as a link that downloads the file in one tap.
 - `open_meteo`: Open-Meteo archive of real hourly years (reanalysis, global, CORS-enabled), averaged over several
   years into a typical year.
 The site search (geocoding: place name or address → coordinates) uses Nominatim (OpenStreetMap), which is CORS-enabled.
@@ -46,13 +46,16 @@ def open_meteo_url(latitude, longitude, n_years=10, end_year=None, open_meteo_mo
     return f"{OPEN_METEO_ARCHIVE_URL}?{urlencode(parameters)}"
 
 
-def pvgis_tmy_url(latitude, longitude, pvgis_use_horizon=True, **kwargs):
+def pvgis_tmy_url(latitude, longitude, pvgis_use_horizon=True, browser_download=False, **kwargs):
     """Request URL of the PVGIS typical meteorological year as CSV (the format of `data/Freiburg-pvgis-tmy.csv`).
 
     PVGIS shades the direct radiation by the terrain horizon from its elevation model unless `pvgis_use_horizon` is
-    false; this covers distant mountains that a LiDAR scan does not reach.
+    false; this covers distant mountains that a LiDAR scan does not reach. With `browser_download`, PVGIS sends the
+    file as a download (`browser=1`), so a link to the URL saves the file in one tap.
     """
     parameters = {"lat": f"{latitude:.4f}", "lon": f"{longitude:.4f}", "outputformat": "csv", "usehorizon": int(bool(pvgis_use_horizon))}
+    if browser_download:
+        parameters["browser"] = 1
     return f"{PVGIS_TMY_URL}?{urlencode(parameters)}"
 
 

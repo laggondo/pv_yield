@@ -50,10 +50,10 @@ def site_search_results(text):
 
 
 def weather_downloads(latitude, longitude, weather_json="{}"):
-    """Weather downloads the page can fetch for a site (CORS-enabled services), plus the PVGIS URL for a manual download, as JSON."""
+    """Weather downloads the page can fetch for a site (CORS-enabled services), plus the PVGIS URL for a one-tap file download, as JSON."""
     weather = json.loads(weather_json)
     candidates = weather_download_candidates(latitude, longitude, in_browser=True, **{key: value for key, value in weather.items() if key != "download_service"})
-    return json.dumps({"candidates": candidates, "pvgis_url": pvgis_tmy_url(latitude, longitude, **weather)})
+    return json.dumps({"candidates": candidates, "pvgis_url": pvgis_tmy_url(latitude, longitude, browser_download=True, **weather)})
 
 
 def config_yaml_from_json(config_json):

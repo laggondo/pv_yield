@@ -17,7 +17,7 @@ Then open <http://localhost:8000/>. Rebuild after changing the Python package or
 
 - `?pyodide=<base URL>` loads Pyodide from elsewhere, e.g. a self-hosted copy of the full distribution.
 - Site: place name or address (search with Nominatim, OpenStreetMap), GPS, or coordinates; empty means the weather data's coordinates.
-- Weather: downloaded for the site from Open-Meteo (mean of several years; the only free source found that allows requests from a web page, see #8), or a file: PVGIS TMY (CSV/JSON; the page links to the PVGIS download for the site), Open-Meteo JSON or TMY3. The format is detected.
+- Weather: downloaded for the site from Open-Meteo (mean of several years; the only free source found that allows requests from a web page, see #8), or a file: PVGIS TMY (CSV/JSON; the page links to the PVGIS file for the site, which PVGIS sends as a download with `browser=1`, so it takes one tap plus picking the file), Open-Meteo JSON or TMY3. The format is detected.
 - Obstructed sky description: a JSON file (from the CLI or saved from the page), or computed from a LiDAR point cloud in the page (meant for computers; the file is passed to Python through Pyodide's file system).
 - The irradiation per sky patch is computed on the sky discretization of the obstructed sky description and cached, so changing only the panel entries recomputes just the yield. An empty tilt or azimuth is optimized.
 - Files: the weather data, the obstructed sky description and the config (YAML) can be saved and loaded, to move them between devices; results download as a zip (results.json, config.yaml, CSV tables) and as a PDF report (matplotlib is loaded on first use). The loaded inputs and the form are kept in the browser (IndexedDB) for the next visit.
