@@ -198,7 +198,7 @@ class OpenMeteoWeatherSource(WeatherSource):
         latitude, longitude = float(data["latitude"]), float(data["longitude"])
         radiation = radiation.clip(lower=0.0)
         radiation.index = radiation.index.tz_convert(local_standard_time_zone(longitude, self.utc_offset_hours))
-        years = sorted(set(hour_starts.year))
+        years = sorted(set((hour_starts + pd.Timedelta(minutes=30)).year))   ### by the hours' midpoints: the first hour starts on 31 December
         hourly = hourly_typical_year(radiation, self.year)
         if len(hourly) != 8760:
             raise ValueError(f"Open-Meteo data covers {len(hourly)} hours of the year after averaging, expected 8760; request whole years")
