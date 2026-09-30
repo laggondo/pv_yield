@@ -59,7 +59,7 @@ def test_open_meteo_is_plausible_against_pvgis(open_meteo):
     pvgis = load_weather((REPOSITORY / "data" / "Freiburg-pvgis-tmy.csv").read_text(encoding="utf-8"))
     annual = {name: data.hourly.sum() / 1000.0 for name, data in (("Open-Meteo", weather), ("PVGIS", pvgis))}
     monthly = {name: data.hourly.groupby(data.hourly.index.month)["ghi"].sum() / 1000.0 for name, data in (("Open-Meteo", weather), ("PVGIS", pvgis))}
-    print(f"\nOpen-Meteo grid point {weather.latitude}, {weather.longitude} ({distance_km(weather.latitude, weather.longitude, **SITE):.1f} km from the site), {weather.name}")
+    print(f"\nOpen-Meteo grid point {weather.latitude}, {weather.longitude} ({distance_km(weather.latitude, weather.longitude, SITE["latitude"], SITE["longitude"]):.1f} km from the site), {weather.name}")
     for name, values in annual.items():
         print(f"{name:10} annual GHI {values['ghi']:7.1f}, DHI {values['dhi']:7.1f}, DNI {values['dni']:7.1f} kWh/m²")
     print("Monthly GHI ratio Open-Meteo / PVGIS: " + ", ".join(f"{ratio:.2f}" for ratio in monthly["Open-Meteo"] / monthly["PVGIS"]))
