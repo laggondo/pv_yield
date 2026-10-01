@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from bokeh.embed import json_item
-from bokeh.models import GlyphRenderer, Image, Patches, VBar
+from bokeh.models import GlyphRenderer, Image, MultiLine, Patches, VBar
 
 from pv_yield_estimator.core.irradiation import compute_patch_irradiation, sun_path_directions
 from pv_yield_estimator.core.panel_yield import YieldEstimator
@@ -52,14 +52,18 @@ def test_annual_radiation_per_patch_sums(pipeline):
 
 
 def test_sky_hemisphere_plot(pipeline):
-    """One patch per sky patch with its obstruction flag; works without irradiation, too; serializable for the browser."""
+    """One patch per sky patch with its obstruction flag, obstructed patches dimmed (with radiation) and the border outlined; works without irradiation, too; serializable for the browser."""
     irradiation, obstructed_sky, _ = pipeline
+    n_obstructed = np.count_nonzero(obstructed_sky.obstructed)
     for plot, with_radiation in ((sky_hemisphere_plot(obstructed_sky, irradiation), True), (sky_hemisphere_plot(obstructed_sky), False)):
-        (patches,) = renderers_of(plot, Patches)
+        patches, *veil = renderers_of(plot, Patches)
         data = patches.data_source.data
         assert len(data["xs"]) == obstructed_sky.sky.n_patches
-        assert list(data["obstructed"]).count("yes") == np.count_nonzero(obstructed_sky.obstructed)
+        assert list(data["obstructed"]).count("yes") == n_obstructed
         assert ("total_kwh_m2" in data) == with_radiation
+        assert [len(renderer.data_source.data["xs"]) for renderer in veil] == ([n_obstructed] if with_radiation else [])
+        (outline,) = renderers_of(plot, MultiLine)
+        assert len(outline.data_source.data["xs"]) == len(obstructed_sky.boundary_edges()) > 0
         json.dumps(json_item(plot))
 
 

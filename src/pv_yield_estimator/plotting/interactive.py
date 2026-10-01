@@ -15,7 +15,7 @@ from pv_yield_estimator.core.panel_yield import SHADING_CASES
 from pv_yield_estimator.core.sky import zenith_azimuth_from_directions
 
 ### Days of the sun paths drawn into the sky plot: summer solstice, equinox, winter solstice.
-SUN_PATH_DAYS = (("06-21", "21 June", "#2ca02c"), ("03-20", "20 March / 23 September", "#17becf"), ("12-21", "21 December", "#9467bd"))
+SUN_PATH_DAYS = (("06-21", "21 June", "#2ca02c"), ("03-20", "20 March / 23 September", "#1f77b4"), ("12-21", "21 December", "#9467bd"))
 CASE_DASHES = {"unobstructed": "dashed", "obstructed": "solid"}
 ### Daily bars: one hue, light for the unobstructed radiation (the potential) behind dark for the obstructed.
 CASE_BAR_COLORS = {"unobstructed": "#f6c49a", "obstructed": "#d95f02"}
@@ -24,8 +24,10 @@ BEST_MARKER_COLOR, PANEL_MARKER_COLOR = "#00e5ff", "#ffffff"
 ORIENTATION_CONTOUR_FRACTIONS = (0.95, 0.9)
 COMPONENT_COLORS = {"total": "#222222", "direct": "#d95f02", "diffuse": "#1f78b4"}
 MONTH_NAMES = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-OBSTRUCTED_HATCH_COLOR = "#1f77b4"
-EMPTY_PATCH_COLOR = "#f4f4f4"
+### Obstructed sky patches: dimmed by a white veil, and a thick outline along the border of the obstructed sky.
+OBSTRUCTED_VEIL_ALPHA = 0.55
+OBSTRUCTION_OUTLINE_COLOR, OBSTRUCTION_OUTLINE_WIDTH = "#00e5ff", 2.5
+EMPTY_PATCH_COLOR, OBSTRUCTED_EMPTY_PATCH_COLOR = "#f4f4f4", "#bdbdbd"
 TOOLS = "pan,wheel_zoom,box_zoom,reset,save"
 ### No pan or wheel zoom active by default, so touching or scrolling over a plot scrolls the page (phones); the tools are
 ### switched on in the toolbar.
@@ -37,6 +39,16 @@ def polar_plot_xy(directions):
     zenith, azimuth = zenith_azimuth_from_directions(directions)
     zenith_deg = np.degrees(zenith)
     return zenith_deg * np.sin(azimuth), zenith_deg * np.cos(azimuth)
+
+
+def obstruction_outline_xy(obstructed_sky, points_per_edge=8):
+    """Border of the obstructed sky in the polar plot: one line (x, y) per edge between an obstructed and a free patch, drawn as a great circle arc."""
+    nodes = obstructed_sky.sky.nodes
+    fractions = np.linspace(0.0, 1.0, points_per_edge)[None, :, None]
+    edges = obstructed_sky.boundary_edges()
+    arcs = (1 - fractions) * nodes[edges[:, 0]][:, None, :] + fractions * nodes[edges[:, 1]][:, None, :]
+    x, y = polar_plot_xy(arcs)
+    return list(x), list(y)
 
 
 def annual_radiation_per_patch(irradiation):
@@ -51,7 +63,7 @@ def annual_radiation_per_patch(irradiation):
 
 
 def sky_hemisphere_plot(obstructed_sky, irradiation=None, width=600, height=780):
-    """Sky hemisphere as a map (north up, east right, radius = zenith angle): patches coloured by annual radiation, obstructed patches hatched, sun paths.
+    """Sky hemisphere as a map (north up, east right, radius = zenith angle): patches coloured by annual radiation, obstructed patches dimmed and outlined, sun paths.
 
     Without `irradiation`, only the patches and obstructions are drawn. Shows how much radiation each blocked part
     of the sky costs, independent of the panel orientation. Colour bar and legend sit below the hemisphere, so it
@@ -61,14 +73,14 @@ def sky_hemisphere_plot(obstructed_sky, irradiation=None, width=600, height=780)
     patch_x, patch_y = polar_plot_xy(sky.nodes[sky.triangles])
     zenith, azimuth = zenith_azimuth_from_directions(sky.patch_centers())
     data = {"xs": list(patch_x), "ys": list(patch_y), "elevation_deg": 90.0 - np.degrees(zenith), "azimuth_deg": np.degrees(azimuth),
-            "obstructed": np.where(obstructed_sky.obstructed, "yes", "no"), "hatch": np.where(obstructed_sky.obstructed, "x", " ")}
+            "obstructed": np.where(obstructed_sky.obstructed, "yes", "no"), "empty_color": np.where(obstructed_sky.obstructed, OBSTRUCTED_EMPTY_PATCH_COLOR, EMPTY_PATCH_COLOR)}
     tooltips = [("elevation", "@elevation_deg{0.0}°"), ("azimuth", "@azimuth_deg{0.0}°"), ("obstructed", "@obstructed")]
-    title = "Sky hemisphere: obstructed patches hatched"
+    title = "Sky hemisphere: obstructed patches grey, outlined"
     if irradiation is not None:
         radiation = annual_radiation_per_patch(irradiation)
         data |= {f"{component}_kwh_m2": values for component, values in radiation.items()}
         tooltips += [("direct normal", "@direct_kwh_m2{0.00} kWh/m²"), ("diffuse", "@diffuse_kwh_m2{0.00} kWh/m²"), ("total", "@total_kwh_m2{0.00} kWh/m²")]
-        title = "Annual radiation per sky patch; hatched: obstructed"
+        title = "Annual radiation per sky patch; obstructed patches dimmed, outlined"
     source = ColumnDataSource(data)
     ### Automatic ranges (from the data: horizon circle and N/E/S/W labels) so that match_aspect keeps the hemisphere round.
     plot = figure(title=title, width=width, height=height, sizing_mode="scale_width", match_aspect=True,
@@ -79,11 +91,16 @@ def sky_hemisphere_plot(obstructed_sky, irradiation=None, width=600, height=780)
         fill = {"field": "total_kwh_m2", "transform": color_mapper}
         plot.add_layout(ColorBar(color_mapper=color_mapper, title="annual radiation per patch (kWh/m²)", orientation="horizontal", height=12), "below")
     else:
-        fill = EMPTY_PATCH_COLOR
-    patches = plot.patches("xs", "ys", source=source, fill_color=fill, line_color="#999999", line_width=0.3, hatch_pattern="hatch", hatch_color=OBSTRUCTED_HATCH_COLOR, hatch_alpha=0.8)
+        fill = "empty_color"
+    patches = plot.patches("xs", "ys", source=source, fill_color=fill, line_color="#999999", line_width=0.3)
     plot.add_tools(HoverTool(renderers=[patches], tooltips=tooltips))
     if irradiation is not None:
-        legend_items = []
+        obstructed = obstructed_sky.obstructed
+        plot.patches([xs for xs, flag in zip(patch_x, obstructed) if flag], [ys for ys, flag in zip(patch_y, obstructed) if flag], fill_color="white", fill_alpha=OBSTRUCTED_VEIL_ALPHA, line_alpha=0.0)
+    outline_x, outline_y = obstruction_outline_xy(obstructed_sky)
+    outline = plot.multi_line(outline_x, outline_y, line_color=OBSTRUCTION_OUTLINE_COLOR, line_width=OBSTRUCTION_OUTLINE_WIDTH, line_cap="round")
+    if irradiation is not None:
+        legend_items = [("border of the obstructed sky (dimmed side)", [outline])]
         year = irradiation.time_start.year
         for month_day, label, color in SUN_PATH_DAYS:
             x, y = polar_plot_xy(sun_path_directions(f"{year}-{month_day}", irradiation.latitude, irradiation.longitude, irradiation.altitude, irradiation.time_start.tz))

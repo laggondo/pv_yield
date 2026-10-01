@@ -6,14 +6,15 @@ involved; this also works in Pyodide. Units as in `plotting.interactive`.
 
 import numpy as np
 import pandas as pd
-from matplotlib.collections import PolyCollection
+from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 
 from pv_yield_estimator.core.irradiation import sun_path_directions
 from pv_yield_estimator.core.panel_yield import SHADING_CASES
-from pv_yield_estimator.plotting.interactive import (BEST_MARKER_COLOR, CASE_BAR_COLORS, CASE_DASHES, COMPONENT_COLORS, EMPTY_PATCH_COLOR, MONTH_NAMES, OBSTRUCTED_HATCH_COLOR, PANEL_MARKER_COLOR,
-                                                     SUN_PATH_DAYS, annual_radiation_per_patch, hour_axis_offset, orientation_contours, polar_plot_xy)
+from pv_yield_estimator.plotting.interactive import (BEST_MARKER_COLOR, CASE_BAR_COLORS, CASE_DASHES, COMPONENT_COLORS, EMPTY_PATCH_COLOR, MONTH_NAMES, OBSTRUCTED_EMPTY_PATCH_COLOR, OBSTRUCTED_VEIL_ALPHA,
+                                                     OBSTRUCTION_OUTLINE_COLOR, OBSTRUCTION_OUTLINE_WIDTH, PANEL_MARKER_COLOR,
+                                                     SUN_PATH_DAYS, annual_radiation_per_patch, hour_axis_offset, obstruction_outline_xy, orientation_contours, polar_plot_xy)
 
 COLORMAP = "inferno"
 ### A4 landscape in inches, the page size of the PDF report.
@@ -21,7 +22,7 @@ PAGE_SIZE = (11.69, 8.27)
 
 
 def sky_hemisphere_figure(obstructed_sky, irradiation=None, figsize=(7.0, 7.5)):
-    """Sky hemisphere (north up, east right, radius = zenith angle): patches coloured by annual radiation, obstructed patches hatched, sun paths."""
+    """Sky hemisphere (north up, east right, radius = zenith angle): patches coloured by annual radiation, obstructed patches dimmed and outlined, sun paths."""
     figure = Figure(figsize=figsize, layout="constrained")
     axes = figure.add_subplot()
     sky = obstructed_sky.sky
@@ -31,18 +32,22 @@ def sky_hemisphere_figure(obstructed_sky, irradiation=None, figsize=(7.0, 7.5)):
         radiation = annual_radiation_per_patch(irradiation)["total"]
         patches = PolyCollection(polygons, array=radiation, cmap=COLORMAP, norm=Normalize(0.0, radiation.max()), edgecolors="#999999", linewidths=0.2)
         figure.colorbar(patches, ax=axes, orientation="horizontal", shrink=0.8, pad=0.02, label="annual radiation per patch (kWh/m²)")
-        axes.set_title("Annual radiation per sky patch; hatched: obstructed")
+        axes.set_title("Annual radiation per sky patch; obstructed patches dimmed, outlined")
     else:
-        patches = PolyCollection(polygons, facecolors=EMPTY_PATCH_COLOR, edgecolors="#999999", linewidths=0.2)
-        axes.set_title("Sky hemisphere: obstructed patches hatched")
+        patches = PolyCollection(polygons, facecolors=np.where(obstructed_sky.obstructed, OBSTRUCTED_EMPTY_PATCH_COLOR, EMPTY_PATCH_COLOR), edgecolors="#999999", linewidths=0.2)
+        axes.set_title("Sky hemisphere: obstructed patches grey, outlined")
     axes.add_collection(patches)
-    axes.add_collection(PolyCollection(polygons[obstructed_sky.obstructed], facecolors="none", edgecolors=OBSTRUCTED_HATCH_COLOR, linewidths=0.0, hatch="xxx"))
+    if irradiation is not None:
+        axes.add_collection(PolyCollection(polygons[obstructed_sky.obstructed], facecolors="white", alpha=OBSTRUCTED_VEIL_ALPHA, linewidths=0.0))
+    outline_x, outline_y = obstruction_outline_xy(obstructed_sky)
+    axes.add_collection(LineCollection([np.stack([x, y], axis=-1) for x, y in zip(outline_x, outline_y)], colors=OBSTRUCTION_OUTLINE_COLOR, linewidths=OBSTRUCTION_OUTLINE_WIDTH, capstyle="round",
+                                       label="border of the obstructed sky (dimmed side)"))
     if irradiation is not None:
         year = irradiation.time_start.year
         for month_day, label, color in SUN_PATH_DAYS:
             x, y = polar_plot_xy(sun_path_directions(f"{year}-{month_day}", irradiation.latitude, irradiation.longitude, irradiation.altitude, irradiation.time_start.tz))
             axes.plot(x, y, color=color, linewidth=2, label=f"sun path {label}")
-        axes.legend(loc="upper center", bbox_to_anchor=(0.5, -0.02), ncols=3, fontsize=7, frameon=False)
+        axes.legend(loc="upper center", bbox_to_anchor=(0.5, -0.02), ncols=2, fontsize=7, frameon=False)
     angle = np.linspace(0, 2 * np.pi, 361)
     axes.plot(90 * np.sin(angle), 90 * np.cos(angle), color="black", linewidth=1)
     for elevation_deg in (30, 60):

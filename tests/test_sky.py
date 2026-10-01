@@ -77,6 +77,16 @@ def test_obstructed_sky_json_round_trip_and_sky_view_factor(sky):
     assert ObstructedSky(sky, np.zeros(sky.n_patches, bool)).sky_view_factor(panel_normal(40.0, 123.0)) == 1.0
 
 
+def test_boundary_edges(sky):
+    """The border of an obstructed cap around the zenith consists of the edges between cap and rest; none without obstruction or with all patches obstructed."""
+    cap = sky.patch_centers()[:, 2] > np.cos(np.radians(30))
+    edges = ObstructedSky(sky, cap).boundary_edges()
+    triangles_per_edge = [[index for index, triangle in enumerate(sky.triangles) if set(edge) <= set(triangle)] for edge in edges]
+    assert len(edges) > 0 and all(len(patches) == 2 and cap[patches].sum() == 1 for patches in triangles_per_edge)
+    assert len(ObstructedSky(sky, np.zeros(sky.n_patches, dtype=bool)).boundary_edges()) == 0
+    assert len(ObstructedSky(sky, np.ones(sky.n_patches, dtype=bool)).boundary_edges()) == 0
+
+
 def test_obstructed_sky_rejects_wrong_files(sky):
     """Wrong kind, missing version and wrong flag count raise errors naming the problem."""
     data = ObstructedSky(sky, np.zeros(sky.n_patches, bool)).to_dict()
