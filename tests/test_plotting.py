@@ -1,4 +1,4 @@
-"""Tests of the interactive Bokeh plots."""
+"""Tests of the interactive Bokeh plots and their static matplotlib versions."""
 
 import json
 from pathlib import Path
@@ -6,13 +6,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 from bokeh.embed import json_item
-from bokeh.models import GlyphRenderer, Image, Patches
+from bokeh.models import GlyphRenderer, Image, MultiLine, Patches, VBar
 
 from pv_yield_estimator.core.irradiation import compute_patch_irradiation, sun_path_directions
 from pv_yield_estimator.core.panel_yield import YieldEstimator
 from pv_yield_estimator.core.sky import ObstructedSky, SkyDiscretization
 from pv_yield_estimator.core.weather import load_weather, resolve_site
-from pv_yield_estimator.plotting.interactive import annual_radiation_per_patch, carpet_plots, monthly_profiles_plot, polar_plot_xy, result_plots, sky_hemisphere_plot
+from pv_yield_estimator.plotting.interactive import annual_radiation_per_patch, carpet_plots, daily_bars_plot, monthly_profiles_plot, orientation_contours, orientation_plots, polar_plot_xy, result_plots, sky_hemisphere_plot
+from pv_yield_estimator.plotting.static import static_figures
 
 PVGIS_PATH = Path(__file__).resolve().parents[1] / "data" / "Freiburg-pvgis-tmy.csv"
 
@@ -25,7 +26,7 @@ def pipeline():
     irradiation = compute_patch_irradiation(weather, sky, **resolve_site(weather))
     centers = sky.patch_centers()
     obstructed_sky = ObstructedSky(sky, (centers[:, 1] < 0) & (centers[:, 2] < np.sin(np.radians(30))))
-    result = YieldEstimator(irradiation, obstructed_sky, panel={"tilt_deg": 30.0}).run()
+    result = YieldEstimator(irradiation, obstructed_sky, panel={"tilt_deg": 30.0, "azimuth_deg": 180.0}, orientation={"tilt_step_deg": 5, "azimuth_step_deg": 10}).run()
     return irradiation, obstructed_sky, result
 
 
@@ -51,14 +52,18 @@ def test_annual_radiation_per_patch_sums(pipeline):
 
 
 def test_sky_hemisphere_plot(pipeline):
-    """One patch per sky patch with its obstruction flag; works without irradiation, too; serializable for the browser."""
+    """One patch per sky patch with its obstruction flag, obstructed patches dimmed (with radiation) and the border outlined; works without irradiation, too; serializable for the browser."""
     irradiation, obstructed_sky, _ = pipeline
+    n_obstructed = np.count_nonzero(obstructed_sky.obstructed)
     for plot, with_radiation in ((sky_hemisphere_plot(obstructed_sky, irradiation), True), (sky_hemisphere_plot(obstructed_sky), False)):
-        (patches,) = renderers_of(plot, Patches)
+        patches, *veil = renderers_of(plot, Patches)
         data = patches.data_source.data
         assert len(data["xs"]) == obstructed_sky.sky.n_patches
-        assert list(data["obstructed"]).count("yes") == np.count_nonzero(obstructed_sky.obstructed)
+        assert list(data["obstructed"]).count("yes") == n_obstructed
         assert ("total_kwh_m2" in data) == with_radiation
+        assert [len(renderer.data_source.data["xs"]) for renderer in veil] == ([n_obstructed] if with_radiation else [])
+        (outline,) = renderers_of(plot, MultiLine)
+        assert len(outline.data_source.data["xs"]) == len(obstructed_sky.boundary_edges()) > 0
         json.dumps(json_item(plot))
 
 
@@ -95,7 +100,7 @@ def test_carpet_plots_hold_the_hourly_values(pipeline):
 def test_plots_leave_touch_and_wheel_to_the_page(pipeline):
     """No drag or scroll tool is active by default, so swiping over a plot on a phone scrolls the page (checked in the browser smoke test)."""
     irradiation, obstructed_sky, result = pipeline
-    for plot in [sky_hemisphere_plot(obstructed_sky, irradiation), *carpet_plots(result).children, *monthly_profiles_plot(result).children]:
+    for plot in [sky_hemisphere_plot(obstructed_sky, irradiation), *carpet_plots(result).children, *monthly_profiles_plot(result).children, daily_bars_plot(result), *orientation_plots(result).children]:
         assert plot.toolbar.active_drag is None and plot.toolbar.active_scroll is None
 
 
@@ -106,6 +111,45 @@ def test_monthly_profiles_and_all_plots(pipeline):
     assert len(profiles.children) == 12 and profiles.styles["flex-wrap"] == "wrap"
     assert len(list(profiles.select({"type": GlyphRenderer}))) == 12 * 6
     plots = result_plots(result, obstructed_sky, irradiation)
-    assert list(plots) == ["sky_hemisphere", "monthly_profiles", "carpet"]
+    assert list(plots) == ["sky_hemisphere", "monthly_profiles", "daily_bars", "carpet", "orientation"]
     for plot in plots.values():
         json.dumps(json_item(plot))
+
+
+def test_daily_bars(pipeline):
+    """One bar per day and case, holding the daily radiation on the panel."""
+    _, _, result = pipeline
+    plot = daily_bars_plot(result)
+    bars = renderers_of(plot, VBar)
+    assert len(bars) == 2
+    data = bars[0].data_source.data
+    assert len(data["day"]) == 365
+    np.testing.assert_allclose(data["obstructed"], result.daily()["total_obstructed"])
+    assert np.all(data["obstructed"] <= data["unobstructed"] + 1e-9)
+
+
+def test_orientation_plots(pipeline):
+    """Two heatmaps (tilt × azimuth) with the grid's values; contours at 95 % and 90 % of the best lie below the best value."""
+    _, _, result = pipeline
+    layout = orientation_plots(result)
+    assert len(layout.children) == 2 and layout.styles["flex-wrap"] == "wrap"
+    grid = result.orientation_grid
+    for plot, case in zip(layout.children, ("unobstructed", "obstructed")):
+        (image,) = renderers_of(plot, Image)
+        np.testing.assert_allclose(image.data_source.data["image"][0], grid.radiation[case])
+        assert f"/ {grid.best(case)['azimuth_deg']:g}°" in plot.title.text and plot.sizing_mode is None   ### fixed size, so the row wraps on a phone
+    contours = orientation_contours(grid, "unobstructed")
+    assert {fraction for fraction, _, _ in contours} == {0.95, 0.9}
+    json.dumps(json_item(layout))
+
+
+def test_static_figures(pipeline, tmp_path):
+    """The static figures render to PNG and PDF without pyplot."""
+    irradiation, obstructed_sky, result = pipeline
+    figures = static_figures(result, obstructed_sky, irradiation)
+    assert list(figures) == list(result_plots(result, obstructed_sky, irradiation))
+    for name, figure in figures.items():
+        figure.savefig(tmp_path / f"{name}.png", dpi=50)
+        assert (tmp_path / f"{name}.png").stat().st_size > 1000
+    figures["carpet"].savefig(tmp_path / "carpet.pdf")
+    assert (tmp_path / "carpet.pdf").read_bytes().startswith(b"%PDF")

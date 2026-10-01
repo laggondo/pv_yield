@@ -1,3 +1,4 @@
+[hidden] { display: none !important; }
 body { font-family: system-ui, sans-serif; margin: 0 auto; padding: 16px; max-width: 1000px; background: #fff; color: #222; line-height: 1.4; }
 h1 { font-size: 1.5rem; margin-bottom: 0.2em; }
 h2 { font-size: 1.15rem; margin-top: 1.6em; }
@@ -9,7 +10,7 @@ body[data-state="ready"] #status-light, body[data-state="computed"] #status-ligh
 .inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
 fieldset { border: 1px solid #ccc; border-radius: 6px; }
 label { display: block; margin: 6px 0; }
-label input[type="number"], label select { display: block; width: 100%; box-sizing: border-box; margin-top: 2px; padding: 4px; }
+label input[type="number"]:not(.inline), label select { display: block; width: 100%; box-sizing: border-box; margin-top: 2px; padding: 4px; }
 label input[type="file"] { display: block; margin-top: 2px; max-width: 100%; }
 .summary { font-size: 0.85rem; color: #555; margin-top: 8px; }
 .buttons { margin: 12px 0; display: flex; gap: 8px; flex-wrap: wrap; }
@@ -24,3 +25,18 @@ td.number, th.number { text-align: right; font-variant-numeric: tabular-nums; }
 #log { font-size: 0.75rem; max-height: 30em; overflow: auto; background: #f4f4f4; padding: 8px; }
 footer { margin-top: 2em; font-size: 0.8rem; color: #666; }
 #plot-sky_hemisphere { max-width: 640px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+.row > label { flex: 1 1 120px; }
+.row > input[type="search"] { flex: 1 1 180px; padding: 4px; min-width: 0; }
+input[type="text"], input[type="search"] { box-sizing: border-box; width: 100%; padding: 4px; margin-top: 2px; }
+label .row { margin-top: 2px; }
+label .row input[type="search"] { width: auto; margin-top: 0; }
+input.inline { display: inline-block; width: 4.5em; padding: 2px 4px; }
+label input.inline + button { display: block; margin-top: 6px; }
+button.small, label.button { padding: 5px 10px; font-size: 0.9rem; }
+label.button { display: inline-block; margin: 0; border-radius: 6px; border: 1px solid #888; background: #f4f4f4; cursor: pointer; }
+.buttons.secondary { margin-top: 0; }
+details#lidar { margin: 8px 0; }
+details#lidar summary { cursor: pointer; color: #333; }
+caption { text-align: left; font-size: 0.9rem; color: #444; padding-bottom: 4px; }
+#plot-daily_bars, #plot-orientation { max-width: 1000px; }

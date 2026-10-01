@@ -213,6 +213,16 @@ class ObstructedSky:
         weights = np.maximum(self.sky.direction_integrals() @ np.asarray(normal, dtype=float), 0.0)
         return float(weights[~self.obstructed].sum() / weights.sum())
 
+    def boundary_edges(self):
+        """Edges between an obstructed and a free patch, as node index pairs of shape (k, 2): the border of the obstructed sky, e.g. for plots."""
+        edges = np.sort(np.concatenate([self.sky.triangles[:, [i, (i + 1) % 3]] for i in range(3)]), axis=1)
+        obstructed_count = np.tile(self.obstructed.astype(int), 3)
+        unique_edges, edge_index = np.unique(edges, axis=0, return_inverse=True)
+        ### Each inner edge belongs to two patches; it is on the border if exactly one of them is obstructed.
+        n_patches = np.bincount(edge_index, minlength=len(unique_edges))
+        n_obstructed = np.bincount(edge_index, weights=obstructed_count, minlength=len(unique_edges))
+        return unique_edges[(n_patches == 2) & (n_obstructed == 1)]
+
     def to_dict(self):
         """Content of the JSON file, with format version."""
         return {FORMAT_VERSION_KEY: OBSTRUCTED_SKY_FORMAT_VERSION, "kind": "obstructed_sky", "metadata": self.metadata, **self.sky.to_dict(), "obstructed": self.obstructed.astype(int).tolist()}

@@ -25,7 +25,8 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
 ## Inputs
 
 - **Weather data:** e.g. an hourly typical meteorological year (TMY3 format), established via the paid MeteoNorm service (see `legacy_code/`), or from the free PVGIS service (sample in `data/`). Explore free alternatives of similar quality, ideally downloaded automatically.
-  - *Open question:* browsers block requests from a static page to other sites unless those sites allow it; PVGIS (the EU's free solar data service) likely does not. Find a free source that allows it (e.g. Open-Meteo), or fall back to a manual file download.
+  - Browsers block requests from a static page to other sites unless those sites allow it (CORS). PVGIS (the EU's free solar data service) does not; Open-Meteo (reanalysis, real years averaged into a typical year) does (#8). So the browser downloads from Open-Meteo and links to the PVGIS file for a manual download; the CLI prefers PVGIS and falls back to Open-Meteo.
+- **Site selection:** place name or address (geocoding with Nominatim, OpenStreetMap), GPS on phones, or coordinates; the weather data comes from the nearest point the chosen service offers.
 - **Site coordinates** (latitude/longitude); may come from the weather data or from user inputs.
 - **Panel orientation** (tilt and azimuth), unless it is optimized.
 - **Sky obstruction, LiDAR-based:** point cloud from a LiDAR scanner (e.g. Livox), see `legacy_code/`. Scans may be much larger than the 17 MB sample, so this step is meant for computers, not phones.

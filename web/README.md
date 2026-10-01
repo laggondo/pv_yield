@@ -16,7 +16,11 @@ python -m http.server 8000 -d _site
 Then open <http://localhost:8000/>. Rebuild after changing the Python package or files in `web/`.
 
 - `?pyodide=<base URL>` loads Pyodide from elsewhere, e.g. a self-hosted copy of the full distribution.
-- Inputs: a weather file (PVGIS TMY CSV or TMY3) and an obstructed sky description as written by the CLI (`pv-yield-estimator obstruction ...`). The irradiation per sky patch is computed on the sky discretization of that file and cached, so changing only the panel entries recomputes just the yield.
+- Site: place name or address (search with Nominatim, OpenStreetMap), GPS, or coordinates; empty means the weather data's coordinates.
+- Weather: downloaded for the site from Open-Meteo (mean of several years; the only free source found that allows requests from a web page, see #8), or a file: PVGIS TMY (CSV/JSON; the page links to the PVGIS file for the site, which PVGIS sends as a download with `browser=1`, so it takes one tap plus picking the file), Open-Meteo JSON or TMY3. The format is detected.
+- Obstructed sky description: a JSON file (from the CLI or saved from the page), or computed from a LiDAR point cloud in the page (meant for computers; the file is passed to Python through Pyodide's file system).
+- The irradiation per sky patch is computed on the sky discretization of the obstructed sky description and cached, so changing only the panel entries recomputes just the yield. An empty tilt or azimuth is optimized.
+- Files: the weather data, the obstructed sky description and the config (YAML) can be saved and loaded, to move them between devices; results download as a zip (results.json, config.yaml, CSV tables) and as a PDF report (matplotlib is loaded on first use). The loaded inputs and the form are kept in the browser (IndexedDB) for the next visit.
 
 ## Hosting
 
@@ -24,4 +28,4 @@ Then open <http://localhost:8000/>. Rebuild after changing the Python package or
 
 ## Tests
 
-`tests/test_browser_app.py` tests the Python side natively and, with `PV_YIELD_BROWSER_TEST=1` and the Playwright Python bindings (`playwright-python` from conda-forge, plus `python -m playwright install chromium`), runs a headless Chromium smoke test of the whole page on the sample data (CI job `browser`). In the Claude Code container, Chromium needs the proxy's CA; pass it as `PV_YIELD_CHROMIUM_ARGS=--ignore-certificate-errors-spki-list=<SHA-256 of the CA's public key, base64>` together with `PV_YIELD_CHROMIUM=/opt/pw-browsers/chromium`.
+`tests/test_browser_app.py` tests the Python side natively and, with `PV_YIELD_BROWSER_TEST=1` and the Playwright Python bindings (`playwright-python` from conda-forge, plus `python -m playwright install chromium`), runs a headless Chromium smoke test of the whole page (CI job `browser`): site search and weather download (answered with canned responses), the sample data, exports, the PDF report, the LiDAR sample and restoring the inputs after a reload. In the Claude Code container, Chromium needs the proxy's CA; pass it as `PV_YIELD_CHROMIUM_ARGS=--ignore-certificate-errors-spki-list=<SHA-256 of the CA's public key, base64>` together with `PV_YIELD_CHROMIUM=/opt/pw-browsers/chromium`.
