@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 PVGIS_TMY_URL = "https://re.jrc.ec.europa.eu/api/v5_3/tmy"
 NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
+NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
 ### Identifies the program towards the web services, as Nominatim's usage policy asks (the CLI sends it as User-Agent).
 USER_AGENT = "pv_yield_estimator (https://github.com/laggondo/pv_yield)"
 
@@ -101,6 +102,16 @@ def site_search_url(query, limit=5):
     if not str(query).strip():
         raise ValueError("The site search needs a place name or address, got an empty text")
     return f"{NOMINATIM_SEARCH_URL}?{urlencode({'q': query, 'format': 'jsonv2', 'limit': limit})}"
+
+
+def site_name_url(latitude, longitude):
+    """Request URL of the Nominatim (OpenStreetMap) reverse search: the address or place name at given coordinates, e.g. from GPS."""
+    return f"{NOMINATIM_REVERSE_URL}?{urlencode({'lat': f'{latitude:.6f}', 'lon': f'{longitude:.6f}', 'format': 'jsonv2'})}"
+
+
+def parse_site_name(text):
+    """Address or place name from the reverse search response; empty if there is none (e.g. at sea)."""
+    return json.loads(text).get("display_name", "")
 
 
 def parse_site_search(text):

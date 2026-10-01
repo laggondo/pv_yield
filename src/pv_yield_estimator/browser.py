@@ -24,7 +24,7 @@ from pv_yield_estimator.core.obstruction_methods import sky_obstruction_method
 from pv_yield_estimator.core.panel_yield import YieldEstimator
 from pv_yield_estimator.core.sky import ObstructedSky, SkyDiscretization
 from pv_yield_estimator.core.weather import distance_km, load_weather, resolve_site
-from pv_yield_estimator.core.weather_download import parse_site_search, pvgis_tmy_url, site_search_url, weather_download_candidates
+from pv_yield_estimator.core.weather_download import parse_site_name, parse_site_search, pvgis_tmy_url, site_name_url, site_search_url, weather_download_candidates
 from pv_yield_estimator.file_format import to_json_text
 from pv_yield_estimator.plotting.interactive import result_plots
 
@@ -47,6 +47,16 @@ def site_search(query):
 def site_search_results(text):
     """Places found by the site search (response text), as JSON list of {name, latitude, longitude}."""
     return json.dumps(parse_site_search(text))
+
+
+def site_name(latitude, longitude):
+    """URL of the reverse site search for coordinates (the page fetches it), as JSON string."""
+    return json.dumps(site_name_url(latitude, longitude))
+
+
+def site_name_result(text):
+    """Address or place name from the reverse site search response (empty if none), as JSON string."""
+    return json.dumps(parse_site_name(text))
 
 
 def weather_downloads(latitude, longitude, weather_json="{}"):

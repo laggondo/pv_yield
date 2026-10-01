@@ -8,7 +8,7 @@ const SAMPLE_WEATHER = { url: "samples/Freiburg-pvgis-tmy.csv", source: "pvgis_t
 const SAMPLE_SKY = { url: "samples/sample_obstructed_sky.json" };
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 // Form fields stored for the next visit and filled from a loaded config.
-const FORM_FIELDS = ["site-latitude", "site-longitude", "weather-years", "weather-source", "tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare",
+const FORM_FIELDS = ["site-query", "site-latitude", "site-longitude", "weather-years", "weather-source", "tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare",
   "scanner_heading_deg", "offset-east", "offset-north", "offset-up", "min_points", "n_sky_nodes"];
 const ENTER_COMPUTES = ["tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare"];
 
@@ -313,7 +313,27 @@ async function updatePvgisLink() {
   element("pvgis-link").removeAttribute("target");
 }
 
+// Places found by the last site search, offered in the list below the search field.
 let foundPlaces = [];
+
+// Fill the place field with the address at the site's coordinates (reverse search), e.g. after GPS or typed coordinates;
+// the list of found places no longer applies. A failed lookup only gets logged: the coordinates are what counts.
+async function describeSite() {
+  const latitude = numberOrNull("site-latitude"), longitude = numberOrNull("site-longitude");
+  if (!pythonReady || latitude === null || longitude === null) return;
+  foundPlaces = [];
+  element("site-results-label").hidden = true;
+  element("site-query").value = "";
+  try {
+    const name = await call("siteNameResult", await fetchText(await call("siteNameUrl", latitude, longitude)));
+    element("site-query").value = name;
+    report(`Site at ${latitude}, ${longitude}: ${name || "no address found"}`);
+  } catch (error) {
+    report(`Could not look up the address of the site: ${error.message ?? error}`);
+  }
+  remember("form", formValues());
+}
+
 async function searchSite() {
   const query = element("site-query").value.trim();
   const places = await call("siteSearchResults", await fetchText(await call("siteSearchUrl", query)));
@@ -331,7 +351,7 @@ function locateByGps() {
     navigator.geolocation.getCurrentPosition(position => {
       setSite(position.coords.latitude, position.coords.longitude);
       report(`Site from GPS: ${position.coords.latitude.toFixed(5)}, ${position.coords.longitude.toFixed(5)} (±${Math.round(position.coords.accuracy)} m)`);
-      resolve();
+      describeSite().then(resolve);
     }, error => reject(new Error(`Location not available: ${error.message}`)), { enableHighAccuracy: true, timeout: 30_000 });
   });
 }
@@ -422,6 +442,7 @@ element("site-query").addEventListener("keydown", event => { if (event.key === "
 element("site-results").addEventListener("change", event => setSite(foundPlaces[event.target.value].latitude, foundPlaces[event.target.value].longitude));
 element("site-gps").addEventListener("click", () => whileBusy(locateByGps));
 for (const id of ["site-latitude", "site-longitude", "weather-years"]) element(id).addEventListener("change", () => updatePvgisLink().catch(fail));
+for (const id of ["site-latitude", "site-longitude"]) element(id).addEventListener("change", () => describeSite());
 element("weather-download").addEventListener("click", () => whileBusy(downloadWeather));
 element("weather-file").addEventListener("change", async event => {
   const file = event.target.files[0];

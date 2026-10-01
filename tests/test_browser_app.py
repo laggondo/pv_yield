@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from pv_yield_estimator.browser import BrowserSession, config_json_from_yaml, config_yaml_from_json, site_search, site_search_results, versions, weather_downloads
+from pv_yield_estimator.browser import BrowserSession, config_json_from_yaml, config_yaml_from_json, site_name, site_name_result, site_search, site_search_results, versions, weather_downloads
 from test_weather import open_meteo_response
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -26,6 +26,7 @@ SKY_PATH = REPOSITORY / "examples" / "sample_obstructed_sky.json"
 POINT_CLOUD_PATH = REPOSITORY / "data" / "2026-06-01_22-25-29_red_red.csv"
 SAMPLE_CONFIG_PATH = REPOSITORY / "examples" / "sample_config.yaml"
 NOMINATIM_ANSWER = '[{"display_name": "Freiburg im Breisgau, Deutschland", "lat": "47.996", "lon": "7.849"}]'
+NOMINATIM_REVERSE_ANSWER = '{"display_name": "Rathausplatz, Freiburg im Breisgau, Deutschland", "lat": "47.996", "lon": "7.849"}'
 SITE_ORIGIN = "http://localhost:8765"
 PANEL = {"tilt_deg": 15.0, "azimuth_deg": 180.0, "area_m2": 1.0, "efficiency": 0.2, "performance_ratio": 0.8}
 
@@ -96,6 +97,7 @@ def test_browser_helpers():
     """Site search and weather download URLs, parsing of the search results, config YAML round trip."""
     assert json.loads(site_search("Freiburg")).startswith("https://nominatim.openstreetmap.org/search?q=Freiburg")
     assert json.loads(site_search_results(NOMINATIM_ANSWER))[0]["latitude"] == 47.996
+    assert "/reverse?lat=48.000000&lon=7.850000" in json.loads(site_name(48.0, 7.85)) and json.loads(site_name_result(NOMINATIM_REVERSE_ANSWER)).startswith("Rathausplatz")
     downloads = json.loads(weather_downloads(48.0, 7.85, json.dumps({"n_years": 3, "source": "auto"})))
     assert [candidate["service"] for candidate in downloads["candidates"]] == ["open_meteo"] and "re.jrc.ec.europa.eu" in downloads["pvgis_url"] and downloads["pvgis_url"].endswith("&browser=1")
     config = {"panel": {"tilt_deg": None, "azimuth_deg": 180}, "orientation": {"compare": [[30, 90]]}}
@@ -155,9 +157,9 @@ def test_browser_page_computes_sample(tmp_path, session):
     expected = json.loads(session.compute(json.dumps({"panel": PANEL})))["key_figures"]
     with sync_api.sync_playwright() as playwright:
         browser = playwright.chromium.launch(**launch_options)
-        context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, accept_downloads=True)
+        context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, accept_downloads=True, geolocation={"latitude": 47.99609, "longitude": 7.8494}, permissions=["geolocation"])
         context.route(f"{SITE_ORIGIN}/**", serve_site_file)
-        context.route("https://nominatim.openstreetmap.org/**", lambda route: route.fulfill(body=NOMINATIM_ANSWER, content_type="application/json", headers=cors))
+        context.route("https://nominatim.openstreetmap.org/**", lambda route: route.fulfill(body=NOMINATIM_REVERSE_ANSWER if "/reverse" in route.request.url else NOMINATIM_ANSWER, content_type="application/json", headers=cors))
         context.route("https://archive-api.open-meteo.com/**", lambda route: route.fulfill(body=open_meteo_response(years=(2024,)), content_type="application/json", headers=cors))
         page = context.new_page()
         messages = []
@@ -189,6 +191,10 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#weather-download")
             wait_idle()
             assert "Open-Meteo" in page.text_content("#weather-summary")
+            ### GPS: the coordinates and the place field (from the reverse search) are updated, the list of found places is hidden.
+            page.click("#site-gps")
+            wait_idle()
+            assert page.input_value("#site-latitude") == "47.99609" and page.input_value("#site-query").startswith("Rathausplatz") and page.locator("#site-results-label").is_hidden()
             ### Sample data, without the searched site, so the result matches the native session.
             page.fill("#site-latitude", "")
             page.fill("#site-longitude", "")

@@ -10,7 +10,7 @@ import pytest
 
 from conftest import SYNTHETIC_SITE
 from pv_yield_estimator.core.weather import WeatherData, detect_weather_source, distance_km, hourly_typical_year, load_weather, resolve_site
-from pv_yield_estimator.core.weather_download import open_meteo_url, parse_site_search, pvgis_tmy_url, site_search_url, weather_download_candidates
+from pv_yield_estimator.core.weather_download import open_meteo_url, parse_site_name, parse_site_search, pvgis_tmy_url, site_name_url, site_search_url, weather_download_candidates
 
 
 @pytest.fixture(scope="module")
@@ -172,3 +172,10 @@ def test_site_search():
     assert places == [{"name": "Freiburg im Breisgau, Baden-Württemberg, Deutschland", "latitude": 47.9960901, "longitude": 7.8494005}]
     with pytest.raises(ValueError, match="empty"):
         site_search_url("  ")
+
+
+def test_site_name():
+    """The reverse search URL carries the coordinates; the response gives the address, or nothing at sea."""
+    assert site_name_url(47.99609, 7.8494) == "https://nominatim.openstreetmap.org/reverse?lat=47.996090&lon=7.849400&format=jsonv2"
+    assert parse_site_name('{"display_name": "Rathausplatz, Freiburg im Breisgau, Deutschland", "lat": "47.996"}') == "Rathausplatz, Freiburg im Breisgau, Deutschland"
+    assert parse_site_name('{"error": "Unable to geocode"}') == ""

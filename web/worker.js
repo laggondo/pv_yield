@@ -78,6 +78,8 @@ const actions = {
   init,
   siteSearchUrl: query => JSON.parse(browser.site_search(query)),
   siteSearchResults: text => JSON.parse(browser.site_search_results(text)),
+  siteNameUrl: (latitude, longitude) => JSON.parse(browser.site_name(latitude, longitude)),
+  siteNameResult: text => JSON.parse(browser.site_name_result(text)),
   weatherDownloads: (latitude, longitude, weather) => JSON.parse(browser.weather_downloads(latitude, longitude, JSON.stringify(weather))),
   loadWeather: (content, filename, source) => JSON.parse(session.load_weather(content, filename, source)),
   loadObstructedSky: (text, filename) => JSON.parse(session.load_obstructed_sky(text, filename)),
