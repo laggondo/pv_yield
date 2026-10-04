@@ -139,18 +139,25 @@ class BrowserSession:
         """Pixel positions of the editor's sky nodes in a photo, for a camera view (JSON of `CameraView` arguments, or device orientation angles `alpha_deg`, `beta_deg`, `gamma_deg`, `screen_angle_deg` plus `fov_deg`, `width`, `height`).
 
         Returns JSON with the camera orientation, the node pixels (x, y), whether each node is in front of the camera,
-        and the pixels of the compass directions on the horizon and of the zenith, to help align the photo.
+        and, to help align the photo, the horizon as polylines and labels for the compass directions on it and the zenith.
         """
         view = json.loads(view_json)
         if "alpha_deg" in view:
             view = {**view, **camera_orientation_from_device(**view)}
         camera = CameraView(**view)
         pixels, in_front = camera.project(self.editor_base.sky.nodes)
-        markers = {"N": 0.0, "E": 90.0, "S": 180.0, "W": 270.0}
-        marker_directions = [[np.sin(np.radians(azimuth)), np.cos(np.radians(azimuth)), 0.0] for azimuth in markers.values()] + [[0.0, 0.0, 1.0]]
-        marker_pixels, marker_in_front = camera.project(marker_directions)
-        return json.dumps({"view": camera.settings(), "pixels": np.round(pixels, 2).tolist(), "in_front": in_front.tolist(),
-                           "markers": [{"label": label, "x": float(x), "y": float(y)} for label, (x, y), front in zip([*markers, "zenith"], marker_pixels, marker_in_front) if front]})
+        labels = {"N": 0, "NE": 45, "E": 90, "SE": 135, "S": 180, "SW": 225, "W": 270, "NW": 315}
+        label_directions = [[np.sin(np.radians(azimuth)), np.cos(np.radians(azimuth)), 0.0] for azimuth in labels.values()] + [[0.0, 0.0, 1.0]]
+        label_pixels, label_in_front = camera.project(label_directions)
+        ### The horizon in steps of 1°, split into pieces where it passes behind the camera (or nearly sideways, where pixels grow without bound).
+        horizon_azimuths = np.radians(np.arange(0, 361))
+        horizon_directions = np.stack([np.sin(horizon_azimuths), np.cos(horizon_azimuths), np.zeros_like(horizon_azimuths)], axis=1)
+        horizon_pixels, _ = camera.project(horizon_directions)
+        visible = (horizon_directions @ camera.forward > 0.05).astype(int)
+        piece_bounds = np.flatnonzero(np.diff(np.concatenate([[0], visible, [0]]))).reshape(-1, 2)
+        horizon = [np.round(horizon_pixels[start:end], 1).tolist() for start, end in piece_bounds]
+        return json.dumps({"view": camera.settings(), "pixels": np.round(pixels, 2).tolist(), "in_front": in_front.tolist(), "horizon": horizon,
+                           "markers": [{"label": label, "x": float(x), "y": float(y)} for label, (x, y), front in zip([*labels, "zenith"], label_pixels, label_in_front) if front]})
 
     def apply_edits(self, obstructed_json, methods_json, details_json="{}"):
         """Use the flags marked by hand as obstructed sky description (edits baked in, on the start state's discretization); returns the JSON summary."""

@@ -84,7 +84,7 @@ The obstructed sky description is the fundamental intermediate result:
 - Input is a photo of the relevant part of the sky, combined with sensor metadata on camera orientation and field of view.
   - Photos are taken in the page with the phone's camera; the camera orientation (viewing azimuth, elevation, roll) comes from the absolute device orientation (compass, accelerometer, gyroscope) at the moment of the shot. Existing photos can be loaded, with the orientation entered by hand.
   - Browsers don't report the camera's field of view; it is an input (default 65° across the longer image side), checked on a photo.
-  - The orientation of each photo can be corrected so that the compass letters and the horizon drawn over the photo match it (sensor errors, magnetic declination).
+  - The orientation of each photo can be corrected so that the horizon and the compass letters drawn over the photo match it (sensor errors, magnetic declination): by moving the sky grid (right mouse button or two fingers; rotating, and zooming for the field of view) or by entering the angles.
 - The sky discretization is overlaid on the photo with a pinhole camera model, which maps the patch edges (great circle arcs) to straight lines, and the user marks obstructed sky patches manually (touchscreen or mouse): a tap toggles a patch, a drag marks or frees all patches it passes over.
 - The same marking works on a map of the sky hemisphere (north up, as in the sky plot), without a photo.
 - Several photos can be combined: all views edit the same flags. Sky patches not covered by any photo keep their start state (free, unless a loaded description marks them).

@@ -1,6 +1,7 @@
 // Marking obstructed sky patches by hand (photo method, #17): on photos taken with the phone's camera (camera
 // orientation from the phone's sensors) or loaded from files, and on a map of the sky hemisphere. The sky patches are
-// drawn over the view; tapping a patch toggles it, dragging marks or frees all patches it passes over. Loaded
+// drawn over the view; tapping a patch toggles it, dragging marks or frees all patches it passes over. On photos, the
+// sky grid can be moved to match the photo (right mouse button or two fingers; see CONTROLS_TEXT). Loaded
 // obstructed sky descriptions (e.g. from LiDAR) are the start state, and the edits are baked into the flags (#12).
 // The camera geometry (sensor angles to camera orientation, projection of the sky nodes to pixels) is computed in
 // Python (core/photo.py); this module only draws and handles input. Photos are assumed to be taken from the panel
@@ -12,6 +13,13 @@ const SKY_MAP_PX = 800;
 const SKY_MAP_RADIUS = SKY_MAP_PX / 2 - 40;   // radius of the horizon in the sky map; the compass letters sit outside it
 const OBSTRUCTED_FILL = "rgba(220, 30, 30, 0.45)";
 const COMPASS = [["N", 0], ["E", 90], ["S", 180], ["W", 270]];
+const DEFAULT_PHOTO_VIEW = { azimuth_deg: 180, elevation_deg: 15, roll_deg: 0 };   // loaded photos and photos without sensors
+const SHUTTER_KEYS = ["AudioVolumeUp", "AudioVolumeDown", "VolumeUp", "VolumeDown", "Camera", "Enter", " "];
+const CONTROLS_TEXT = {
+  sky_map: "Tap or click a sky patch to mark it as obstructed (red) or free again; drag to mark or free several.",
+  photo: "Mark patches: tap or click, drag for several. Align the sky grid with the photo: drag with the right mouse button (Shift: rotate) and use the mouse wheel for the field of view; "
+    + "on touch screens, drag with two fingers, twist to rotate and pinch for the field of view.",
+};
 
 // Create the editor on the page's elements; `call` runs a worker action, `report` logs, `onApplied(summary)` is called
 // after the marked flags were sent to Python as the new obstructed sky description.
@@ -24,7 +32,9 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   const views = [{ kind: "sky_map", name: "Sky map" }];
   let current = 0;
   const methodsUsed = new Set();
-  let stroke = null;                   // {value, changed} while dragging
+  let stroke = null;                   // {value, changed, before} while marking
+  let alignment = null;                // {pointers, ...} while moving the sky grid over a photo
+  const pointers = new Map();          // active pointers (touch: several fingers) by id: {x, y} in canvas pixels
   const camera = { stream: null, orientation: null, listener: null, eventName: null, projection: null, running: false, requestInFlight: false };
 
   // ---- Geometry ----
@@ -66,9 +76,9 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     return displayedWidth > 0 ? target.width / displayedWidth : 1;
   }
 
-  // Draw the patches (obstructed filled red, all outlined) and the compass markers onto a 2D context; `scale` is the
-  // canvas's display scale.
-  function drawPatches(target, corners, scale, markers) {
+  // Draw the patches (obstructed filled red, all outlined), the horizon and the compass markers onto a 2D context;
+  // `scale` is the canvas's display scale.
+  function drawPatches(target, corners, scale, markers, horizon = []) {
     target.lineWidth = scale;
     target.strokeStyle = "rgba(255, 255, 255, 0.75)";
     target.fillStyle = OBSTRUCTED_FILL;
@@ -82,6 +92,13 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       if (flags[index]) target.fill();
       target.stroke();
     });
+    target.lineWidth = 3 * scale;
+    target.strokeStyle = "yellow";
+    for (const piece of horizon) {
+      target.beginPath();
+      piece.forEach(([x, y], index) => index ? target.lineTo(x, y) : target.moveTo(x, y));
+      target.stroke();
+    }
     target.font = `bold ${Math.round(16 * scale)}px system-ui, sans-serif`;
     target.textAlign = "center";
     target.textBaseline = "middle";
@@ -110,7 +127,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       canvas.width = view.image.width;
       canvas.height = view.image.height;
       context.drawImage(view.image, 0, 0);
-      drawPatches(context, patchCorners(view), displayScale(canvas), view.projection?.markers ?? []);
+      drawPatches(context, patchCorners(view), displayScale(canvas), view.projection?.markers ?? [], view.projection?.horizon ?? []);
     }
     const count = flags.reduce((sum, flag) => sum + flag, 0);
     element("editor-summary").textContent = `${count} of ${flags.length} sky patches marked as obstructed`;
@@ -127,9 +144,14 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     });
     const view = views[current];
     element("photo-settings").hidden = view.kind !== "photo";
-    if (view.kind === "photo") {
-      for (const key of ["azimuth_deg", "elevation_deg", "roll_deg", "fov_deg"]) element(`photo-${key}`).value = Math.round(view.view[key] * 10) / 10;
-    }
+    element("editor-controls").textContent = CONTROLS_TEXT[view.kind];
+    showPhotoSettings();
+  }
+
+  function showPhotoSettings() {
+    const view = views[current];
+    if (view.kind !== "photo") return;
+    for (const key of ["azimuth_deg", "elevation_deg", "roll_deg", "fov_deg"]) element(`photo-${key}`).value = Math.round(view.view[key] * 10) / 10;
   }
 
   function select(index) {
@@ -209,14 +231,94 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     await onApplied(summary);
   }
 
+  // ---- Aligning a photo: moving the sky grid ----
+
+  // Change the photo's camera view by a movement of the grid on screen (canvas pixels): the grid follows the pointer,
+  // so the camera turns the other way. The movement is split along the level camera axes, which the roll turns.
+  function moveGrid(view, dx, dy) {
+    const focalLength = Math.max(view.view.width, view.view.height) / 2 / Math.tan(view.view.fov_deg * Math.PI / 360);
+    const roll = view.view.roll_deg * Math.PI / 180;
+    const along = dx * Math.cos(roll) + dy * Math.sin(roll);
+    const upwards = dx * Math.sin(roll) - dy * Math.cos(roll);
+    const elevation = view.view.elevation_deg * Math.PI / 180;
+    view.view.azimuth_deg = ((view.view.azimuth_deg - along / focalLength * 180 / Math.PI / Math.max(Math.cos(elevation), 0.3)) % 360 + 360) % 360;
+    view.view.elevation_deg = Math.max(-90, Math.min(90, view.view.elevation_deg - upwards / focalLength * 180 / Math.PI));
+  }
+
+  // Zoom the grid by a factor (> 1: larger, i.e. a smaller field of view).
+  function zoomGrid(view, factor) {
+    const fov = 2 * Math.atan(Math.tan(view.view.fov_deg * Math.PI / 360) / factor) * 180 / Math.PI;
+    view.view.fov_deg = Math.max(10, Math.min(170, fov));
+  }
+
+  function gridChanged(view) {
+    showPhotoSettings();
+    project(view).catch(fail);
+  }
+
+  // Centre, spread and angle of the active touch points (two fingers), to move, zoom and rotate the grid.
+  function touchGesture() {
+    const [first, second] = [...pointers.values()];
+    return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2, distance: Math.hypot(second.x - first.x, second.y - first.y), angle: Math.atan2(second.y - first.y, second.x - first.x) };
+  }
+
+  function startAlignment(event) {
+    alignment = event.pointerType === "touch" ? { touch: true, last: touchGesture() } : { touch: false, last: canvasPoint(event), rotate: event.shiftKey };
+  }
+
+  function align(event) {
+    const view = views[current];
+    if (alignment.touch) {
+      if (pointers.size < 2) return;
+      const gesture = touchGesture(), last = alignment.last;
+      moveGrid(view, gesture.x - last.x, gesture.y - last.y);
+      if (last.distance > 0) zoomGrid(view, gesture.distance / last.distance);
+      view.view.roll_deg += (gesture.angle - last.angle) * 180 / Math.PI;
+      alignment.last = gesture;
+    } else {
+      const [x, y] = canvasPoint(event), [lastX, lastY] = alignment.last;
+      if (alignment.rotate) view.view.roll_deg += (x - lastX) * 0.2 / displayScale(canvas);
+      else moveGrid(view, x - lastX, y - lastY);
+      alignment.last = [x, y];
+    }
+    gridChanged(view);
+  }
+
+  // ---- Pointer input: marking (left button, one finger) and aligning (right button, two fingers) ----
+
+  canvas.addEventListener("contextmenu", event => event.preventDefault());
   canvas.addEventListener("pointerdown", event => {
     if (!sky) return;
     canvas.setPointerCapture(event.pointerId);
-    stroke = { value: null, changed: false };
-    markAt(event);
+    const [x, y] = canvasPoint(event);
+    pointers.set(event.pointerId, { x, y });
+    const isPhoto = views[current].kind === "photo";
+    if (isPhoto && event.pointerType === "touch" && pointers.size === 2) {
+      // A second finger: undo what the first one marked and align instead.
+      if (stroke) flags.set(stroke.before);
+      stroke = null;
+      startAlignment(event);
+      draw();
+    } else if (isPhoto && event.button === 2) {
+      startAlignment(event);
+    } else if (event.button === 0 && pointers.size === 1) {
+      stroke = { value: null, changed: false, before: flags.slice() };
+      markAt(event);
+    }
   });
-  canvas.addEventListener("pointermove", event => { if (stroke) markAt(event); });
-  const endStroke = () => {
+  canvas.addEventListener("pointermove", event => {
+    if (!pointers.has(event.pointerId)) return;
+    const [x, y] = canvasPoint(event);
+    pointers.set(event.pointerId, { x, y });
+    if (alignment) align(event);
+    else if (stroke) markAt(event);
+  });
+  const endPointer = event => {
+    pointers.delete(event.pointerId);
+    if (alignment) {
+      if (!alignment.touch || pointers.size === 0) alignment = null;
+      return;
+    }
     if (!stroke) return;
     const changed = stroke.changed;
     stroke = null;
@@ -224,8 +326,15 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     methodsUsed.add(views[current].kind);
     apply().catch(fail);
   };
-  canvas.addEventListener("pointerup", endStroke);
-  canvas.addEventListener("pointercancel", endStroke);
+  canvas.addEventListener("pointerup", endPointer);
+  canvas.addEventListener("pointercancel", endPointer);
+  canvas.addEventListener("wheel", event => {
+    const view = views[current];
+    if (view.kind !== "photo") return;
+    event.preventDefault();
+    zoomGrid(view, Math.exp(-event.deltaY * 0.001));
+    gridChanged(view);
+  }, { passive: false });
 
   // ---- Camera ----
 
@@ -266,14 +375,33 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       overlay.height = video.videoHeight;
       const overlayContext = overlay.getContext("2d");
       overlayContext.clearRect(0, 0, overlay.width, overlay.height);
-      drawPatches(overlayContext, patchCorners({ kind: "photo", projection: camera.projection }), displayScale(overlay), camera.projection.markers);
+      drawPatches(overlayContext, patchCorners({ kind: "photo", projection: camera.projection }), displayScale(overlay), camera.projection.markers, camera.projection.horizon);
       const { azimuth_deg, elevation_deg, roll_deg } = camera.projection.view;
       element("camera-status").textContent = `Camera: azimuth ${azimuth_deg.toFixed(0)}°, elevation ${elevation_deg.toFixed(0)}°, roll ${roll_deg.toFixed(0)}°${camera.orientation.absolute ? "" : " (no compass: correct the azimuth after taking the photo)"}`;
     }
     requestAnimationFrame(liveOverlay);
   }
 
+  // Hardware keys (volume, camera key, Enter, space) take the photo, where the browser passes them to the page.
+  function onCameraKey(event) {
+    if (!SHUTTER_KEYS.includes(event.key)) return;
+    event.preventDefault();
+    if (!event.repeat) element("camera-shoot").click();
+  }
+
   async function startCamera() {
+    try {
+      await openCamera();
+    } catch (error) {
+      stopCamera();       // leave the full-screen layer, e.g. when the camera permission is denied
+      throw error;
+    }
+  }
+
+  async function openCamera() {
+    element("camera").hidden = false;
+    // Full screen hides the browser's bars; not offered everywhere (e.g. iPhones), where the fixed layer covers the page.
+    if (element("camera").requestFullscreen) element("camera").requestFullscreen().catch(error => report(`No full screen: ${error.message}`));
     // iOS asks for permission to use the motion sensors, which must happen right after the tap.
     if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
       const permission = await DeviceOrientationEvent.requestPermission();
@@ -287,10 +415,9 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     const video = element("camera-video");
     video.srcObject = camera.stream;
     await video.play();
-    element("camera").hidden = false;
-    element("editor-view").hidden = true;
+    window.addEventListener("keydown", onCameraKey);
     camera.running = true;
-    element("camera-status").textContent = "Waiting for the motion sensors ...";
+    element("camera-status").textContent = "Waiting for the motion sensors ... (without them, the photo gets a default orientation to align afterwards)";
     report(`Camera started (${video.videoWidth} x ${video.videoHeight} pixels, orientation from ${camera.eventName})`);
     requestAnimationFrame(liveOverlay);
   }
@@ -301,8 +428,9 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     camera.stream = null;
     if (camera.listener) window.removeEventListener(camera.eventName, camera.listener);
     camera.listener = null;
+    window.removeEventListener("keydown", onCameraKey);
+    if (document.fullscreenElement) document.exitFullscreen().catch(error => report(`Could not leave full screen: ${error.message}`));
     element("camera").hidden = true;
-    element("editor-view").hidden = false;
   }
 
   async function takePhoto() {
@@ -312,7 +440,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     frame.height = video.videoHeight;
     frame.getContext("2d").drawImage(video, 0, 0);
     // The orientation at the moment of the shot; without sensors, a default view to correct by hand.
-    const view = camera.orientation ? (await call("projectSky", liveView())).view : { azimuth_deg: 180, elevation_deg: 30, roll_deg: 0, fov_deg: defaultFov() };
+    const view = camera.orientation ? (await call("projectSky", liveView())).view : { ...DEFAULT_PHOTO_VIEW, fov_deg: defaultFov() };
     const taken = new Date().toISOString();
     stopCamera();
     await addPhoto(frame, view, `Photo ${views.length}`, taken);
@@ -341,11 +469,11 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     }
     const url = URL.createObjectURL(file);
     try {
-      await addPhoto(await loadImage(url), { azimuth_deg: 180, elevation_deg: 30, roll_deg: 0, fov_deg: defaultFov() }, file.name, new Date(file.lastModified).toISOString());
+      await addPhoto(await loadImage(url), { ...DEFAULT_PHOTO_VIEW, fov_deg: defaultFov() }, file.name, new Date(file.lastModified).toISOString());
     } finally {
       URL.revokeObjectURL(url);
     }
-    report(`Loaded ${file.name}: set its camera orientation and field of view so that the compass letters and the horizon match the photo`);
+    report(`Loaded ${file.name}: move the sky grid (or set the camera orientation) so that the horizon and the compass letters match the photo`);
   }
 
   function photoSetText() {
@@ -370,13 +498,14 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
 
   async function open() {
     element("editor").hidden = false;
+    document.body.classList.add("overlay-open");
     await reload();
-    element("editor").scrollIntoView({ behavior: "smooth" });
   }
 
   function close() {
     stopCamera();
     element("editor").hidden = true;
+    document.body.classList.remove("overlay-open");
   }
 
   async function freeAll() {

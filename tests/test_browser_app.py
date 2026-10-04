@@ -108,7 +108,8 @@ def test_session_marking_obstructions():
     start = json.loads(session.start_editing(100))
     assert start["obstructed"] == json.loads(SKY_PATH.read_text())["obstructed"] and start["method"] == "lidar"
     projection = json.loads(session.project_sky(json.dumps({"azimuth_deg": 180, "elevation_deg": 20, "fov_deg": 65, "width": 800, "height": 600})))
-    assert len(projection["pixels"]) == len(start["nodes"]) and {marker["label"] for marker in projection["markers"]} == {"S", "zenith"}
+    assert len(projection["pixels"]) == len(start["nodes"]) and {marker["label"] for marker in projection["markers"]} == {"SE", "S", "SW", "zenith"}
+    assert len(projection["horizon"]) == 1 and all(y == pytest.approx(300 + 400 / np.tan(np.radians(32.5)) * np.tan(np.radians(20)), abs=0.1) for _, y in projection["horizon"][0][80:100])
     assert next(marker for marker in projection["markers"] if marker["label"] == "S")["x"] == pytest.approx(400)
     from_device = json.loads(session.project_sky(json.dumps({"alpha_deg": 180, "beta_deg": 110, "gamma_deg": 0, "screen_angle_deg": 0, "fov_deg": 65, "width": 600, "height": 800})))
     assert from_device["view"]["azimuth_deg"] == pytest.approx(180) and from_device["view"]["elevation_deg"] == pytest.approx(20)
@@ -270,11 +271,19 @@ def test_browser_page_computes_sample(tmp_path, session):
             pytest.importorskip("matplotlib.pyplot").imsave(photo_path, np.full((300, 400, 3), 0.7))
             page.set_input_files("#photo-file", photo_path)
             wait_idle()
-            assert page.input_value("#photo-azimuth_deg") == "180" and page.locator("#editor-views button").count() == 2
+            assert page.input_value("#photo-azimuth_deg") == "180" and page.input_value("#photo-elevation_deg") == "15" and page.locator("#editor-views button").count() == 2
             marked_before = page.text_content("#editor-summary")
             tap_canvas(0.5, 0.5)
             page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map+photo')", timeout=60_000)
             assert page.text_content("#editor-summary") != marked_before
+            ### Aligning the photo: dragging the sky grid to the right with the right mouse button turns the camera to the left (east of south).
+            box = page.locator("#editor-canvas").bounding_box()
+            page.mouse.move(box["x"] + 0.5 * box["width"], box["y"] + 0.5 * box["height"])
+            page.mouse.down(button="right")
+            page.mouse.move(box["x"] + 0.7 * box["width"], box["y"] + 0.5 * box["height"], steps=5)
+            page.mouse.up(button="right")
+            page.wait_for_timeout(500)
+            assert float(page.input_value("#photo-azimuth_deg")) < 175 and page.text_content("#editor-summary") != marked_before
             page.click("#camera-start")
             wait_idle()
             page.click("#camera-shoot")

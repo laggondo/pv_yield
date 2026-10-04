@@ -110,40 +110,43 @@
   <p class="hint">Loaded inputs are kept in this browser for your next visit. To move them to another device, save them as files (buttons above) and load them there.</p>
 </section>
 
-<section id="editor" hidden>
-  <h2>Mark obstructions</h2>
-  <p class="hint">Tap a sky patch to mark it as obstructed (red) or free again; drag to mark or free several. Every change is used for the next computation right away.
-    Take the photos from the panel position: the patches are drawn as seen from the camera, without any offset. Patches outside all photos stay as they are (free, unless the start state marks them).</p>
+<!-- Full-screen layer over the page; "Done" returns to the page where it was. -->
+<section id="editor" class="overlay" hidden>
+  <div class="overlay-bar"><h2>Mark obstructions</h2><button id="editor-close" class="primary">Done</button></div>
+  <p class="hint">Take the photos from the panel position: the patches are drawn as seen from the camera, without any offset. Every change is used for the next computation right away.
+    Patches outside all photos stay as they are (free, unless the start state marks them).</p>
   <div class="buttons">
     <button id="camera-start">Take photo (camera)</button>
     <label class="button small">Load photo or photo set <input type="file" id="photo-file" hidden></label>
   </div>
-  <div id="camera" hidden>
-    <div class="camera-stage"><video id="camera-video" playsinline muted></video><canvas id="camera-overlay"></canvas></div>
-    <div class="summary" id="camera-status"></div>
-    <div class="buttons"><button id="camera-shoot" class="primary">Take photo</button><button id="camera-stop" class="small">Cancel</button></div>
-  </div>
-  <div id="editor-view">
-    <div class="buttons" id="editor-views"></div>
-    <canvas id="editor-canvas"></canvas>
-    <div id="photo-settings" hidden>
-      <div class="summary">Camera orientation of this photo; correct it so that the compass letters (N, E, S, W on the horizon) and the horizon match the photo.</div>
-      <div class="row">
-        <label>Azimuth (°, compass) <input type="number" id="photo-azimuth_deg" step="0.5"></label>
-        <label>Elevation (°) <input type="number" id="photo-elevation_deg" step="0.5" min="-90" max="90"></label>
-        <label>Roll (°) <input type="number" id="photo-roll_deg" step="0.5"></label>
-        <label>Field of view (°) <input type="number" id="photo-fov_deg" step="0.5" min="10" max="170"></label>
-      </div>
-      <button id="photo-remove" class="small">Remove this photo</button>
+  <div class="buttons" id="editor-views"></div>
+  <canvas id="editor-canvas"></canvas>
+  <p class="hint" id="editor-controls"></p>
+  <div id="photo-settings" hidden>
+    <div class="summary">Camera orientation of this photo, also set by moving the sky grid (see above); the horizon (yellow) and the compass letters should match the photo.</div>
+    <div class="row">
+      <label>Azimuth (°, compass) <input type="number" id="photo-azimuth_deg" step="0.5"></label>
+      <label>Elevation (°) <input type="number" id="photo-elevation_deg" step="0.5" min="-90" max="90"></label>
+      <label>Roll (°) <input type="number" id="photo-roll_deg" step="0.5"></label>
+      <label>Field of view (°) <input type="number" id="photo-fov_deg" step="0.5" min="10" max="170"></label>
     </div>
+    <button id="photo-remove" class="small">Remove this photo</button>
   </div>
   <div class="summary" id="editor-summary"></div>
   <div class="buttons">
     <button id="editor-free" class="small">Free all patches</button>
     <button id="photos-save" class="small">Save photos</button>
-    <button id="editor-close" class="small">Done</button>
   </div>
 </section>
+
+<!-- Full-screen camera with the sky patches over the live image. -->
+<div id="camera" hidden>
+  <video id="camera-video" playsinline muted></video>
+  <canvas id="camera-overlay"></canvas>
+  <div id="camera-status"></div>
+  <button id="camera-stop" aria-label="Cancel">✕</button>
+  <button id="camera-shoot" aria-label="Take photo"></button>
+</div>
 
 <section id="results" hidden>
   <h2>Key figures</h2>
