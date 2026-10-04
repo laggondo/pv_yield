@@ -22,6 +22,7 @@ from pv_yield_estimator.core.export import export_files, monthly_rows
 from pv_yield_estimator.core.irradiation import compute_patch_irradiation
 from pv_yield_estimator.core.obstruction_methods import sky_obstruction_method
 from pv_yield_estimator.core.panel_yield import YieldEstimator
+from pv_yield_estimator.core.photo import CameraView, camera_orientation_from_device
 from pv_yield_estimator.core.sky import ObstructedSky, SkyDiscretization
 from pv_yield_estimator.core.weather import distance_km, load_weather, resolve_site
 from pv_yield_estimator.core.weather_download import parse_site_name, parse_site_search, pvgis_tmy_url, site_name_url, site_search_url, weather_download_candidates
@@ -85,6 +86,7 @@ class BrowserSession:
         self.irradiation = None
         self.irradiation_key = None
         self.last = None
+        self.editor_base = None
 
     def load_weather(self, content, filename="", source="auto"):
         """Parse a weather file's content with the given weather source (auto: detected); returns a JSON summary for the page."""
@@ -126,6 +128,35 @@ class BrowserSession:
     def obstructed_sky_text(self):
         """The current obstructed sky description as JSON file content, for saving."""
         return to_json_text(self.obstructed_sky.to_dict())
+
+    def start_editing(self, n_sky_nodes=500):
+        """Start marking obstructed sky patches by hand (photos, sky map): the current obstructed sky description is the start state (#12), else a free sky with `n_sky_nodes`; returns the discretization and flags as JSON."""
+        self.editor_base = self.obstructed_sky or ObstructedSky.free(SkyDiscretization.from_node_count(n_sky_nodes))
+        sky = self.editor_base.sky
+        return json.dumps({**sky.to_dict(), "obstructed": self.editor_base.obstructed.astype(int).tolist(), "method": self.editor_base.metadata.get("method", "")})
+
+    def project_sky(self, view_json):
+        """Pixel positions of the editor's sky nodes in a photo, for a camera view (JSON of `CameraView` arguments, or device orientation angles `alpha_deg`, `beta_deg`, `gamma_deg`, `screen_angle_deg` plus `fov_deg`, `width`, `height`).
+
+        Returns JSON with the camera orientation, the node pixels (x, y), whether each node is in front of the camera,
+        and the pixels of the compass directions on the horizon and of the zenith, to help align the photo.
+        """
+        view = json.loads(view_json)
+        if "alpha_deg" in view:
+            view = {**view, **camera_orientation_from_device(**view)}
+        camera = CameraView(**view)
+        pixels, in_front = camera.project(self.editor_base.sky.nodes)
+        markers = {"N": 0.0, "E": 90.0, "S": 180.0, "W": 270.0}
+        marker_directions = [[np.sin(np.radians(azimuth)), np.cos(np.radians(azimuth)), 0.0] for azimuth in markers.values()] + [[0.0, 0.0, 1.0]]
+        marker_pixels, marker_in_front = camera.project(marker_directions)
+        return json.dumps({"view": camera.settings(), "pixels": np.round(pixels, 2).tolist(), "in_front": in_front.tolist(),
+                           "markers": [{"label": label, "x": float(x), "y": float(y)} for label, (x, y), front in zip([*markers, "zenith"], marker_pixels, marker_in_front) if front]})
+
+    def apply_edits(self, obstructed_json, methods_json, details_json="{}"):
+        """Use the flags marked by hand as obstructed sky description (edits baked in, on the start state's discretization); returns the JSON summary."""
+        if self.editor_base is None:
+            raise ValueError("Start marking obstructions first")
+        return self.set_obstructed_sky(self.editor_base.edited(json.loads(obstructed_json), json.loads(methods_json), json.loads(details_json)))
 
     def compute(self, config_json):
         """Compute key figures, monthly values, orientation comparison and plots for a config (JSON text of a partial config, merged over the defaults); returns JSON.
