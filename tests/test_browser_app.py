@@ -207,6 +207,14 @@ def test_browser_page_computes_sample(tmp_path, session):
             wait_idle()
             return path.read_bytes()
 
+        def tap_canvas(fraction_x, fraction_y):
+            """Click the marking canvas at a fraction of its size; the locator waits until the canvas stops moving (the editor scrolls into view smoothly)."""
+            canvas = page.locator("#editor-canvas")
+            canvas.scroll_into_view_if_needed()
+            page.wait_for_timeout(1000)
+            box = canvas.bounding_box()
+            canvas.click(position={"x": fraction_x * box["width"], "y": fraction_y * box["height"]})
+
         try:
             page.goto(f"{SITE_ORIGIN}/")
             page.wait_for_function("['ready', 'error'].includes(document.body.dataset.state)", timeout=300_000)
@@ -255,8 +263,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#sky-edit")
             wait_idle()
             assert f"{n_sample_obstructed} of" in page.text_content("#editor-summary")
-            canvas_box = page.locator("#editor-canvas").bounding_box()
-            page.mouse.click(canvas_box["x"] + 0.5 * canvas_box["width"], canvas_box["y"] + 0.3 * canvas_box["height"])
+            tap_canvas(0.5, 0.3)
             page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map')", timeout=60_000)
             assert f"{n_sample_obstructed} of" not in page.text_content("#editor-summary")
             photo_path = tmp_path / "sky.png"
@@ -265,8 +272,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             wait_idle()
             assert page.input_value("#photo-azimuth_deg") == "180" and page.locator("#editor-views button").count() == 2
             marked_before = page.text_content("#editor-summary")
-            canvas_box = page.locator("#editor-canvas").bounding_box()
-            page.mouse.click(canvas_box["x"] + 0.5 * canvas_box["width"], canvas_box["y"] + 0.5 * canvas_box["height"])
+            tap_canvas(0.5, 0.5)
             page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map+photo')", timeout=60_000)
             assert page.text_content("#editor-summary") != marked_before
             page.click("#camera-start")
