@@ -4,8 +4,9 @@ Subcommands run the pipeline steps, each reading and writing intermediate files:
 - `obstruction`: LiDAR point cloud → obstructed sky description (JSON)
 - `weather`: download weather data for the site (site.latitude/longitude or site.query) → weather file
 - `irradiation`: weather file → irradiation per sky patch (JSON)
-- `yield`: irradiation per sky patch + obstructed sky description → results directory (key figures, tables, plots, report)
-- `run`: all steps in one go: point cloud (or obstructed sky description) + weather file (downloaded if not given) → results directory
+- `yield`: irradiation per sky patch + obstructed sky description (optional) → results directory (key figures, tables, plots, report)
+- `run`: all steps in one go: point cloud or obstructed sky description (optional) + weather file (downloaded if not given) → results directory
+Without an obstructed sky description, the sky is free (no obstruction).
 Without a subcommand, the config is only assembled, logged and optionally exported.
 All file and network access of the CLI lives here; the core receives and returns data.
 """
@@ -68,14 +69,14 @@ def parse_arguments(argv=None):
     irradiation.add_argument("-o", "--output", type=Path, required=True, help="irradiation per sky patch to write (JSON)")
     irradiation.add_argument("--sky", type=Path, help="obstructed sky description whose sky discretization to use (default: from simulation.n_sky_nodes)")
 
-    yield_parser = subparsers.add_parser("yield", help="irradiation per sky patch + obstructed sky description -> results directory")
+    yield_parser = subparsers.add_parser("yield", help="irradiation per sky patch + obstructed sky description (optional) -> results directory")
     yield_parser.add_argument("irradiation", type=Path, help="irradiation per sky patch (JSON)")
-    yield_parser.add_argument("obstructed_sky", type=Path, help="obstructed sky description (JSON)")
+    yield_parser.add_argument("obstructed_sky", type=Path, nargs="?", help="obstructed sky description (JSON); without it, no obstruction")
     yield_parser.add_argument("-d", "--output-dir", type=Path, help="directory for the results (see the config's output section); without it, the key figures are only logged")
 
-    run = subparsers.add_parser("run", help="all steps: point cloud (or obstructed sky description) + weather file (downloaded if not given) -> results directory")
-    run.add_argument("sky_input", type=Path, help="point cloud file (e.g. Livox CSV), or an obstructed sky description (JSON) to skip the obstruction step")
-    run.add_argument("weather", type=Path, nargs="?", help="weather file; if not given, downloaded for the site (site.latitude/longitude or site.query) and kept in the output directory")
+    run = subparsers.add_parser("run", help="all steps: point cloud or obstructed sky description (optional) + weather file (downloaded if not given) -> results directory")
+    run.add_argument("-s", "--sky-input", type=Path, help="point cloud file (e.g. Livox CSV), or an obstructed sky description (JSON) to skip the obstruction step; without it, no obstruction")
+    run.add_argument("-w", "--weather", type=Path, help="weather file; if not given, downloaded for the site (site.latitude/longitude or site.query) and kept in the output directory")
     run.add_argument("-d", "--output-dir", type=Path, required=True, help="directory for the intermediate files (obstructed_sky.json, patch_irradiation.json, the downloaded weather) and the results")
 
     for subparser in subparsers.choices.values():
@@ -223,7 +224,10 @@ def write_plots_html(path, plots, title):
 
 
 def load_or_compute_obstructed_sky(sky_input, config):
-    """Obstructed sky description from a JSON file (kind obstructed_sky) or computed from a point cloud file."""
+    """Obstructed sky description from a JSON file (kind obstructed_sky), computed from a point cloud file, or, without input, a free sky (no obstruction)."""
+    if sky_input is None:
+        log.info("No obstructed sky description given: computing without obstruction")
+        return ObstructedSky.free(SkyDiscretization.from_node_count(**config["simulation"]))
     if require_file(sky_input, "point cloud or obstructed sky description").suffix.lower() == ".json":
         return ObstructedSky.from_dict(read_json(sky_input, "obstructed sky description"), source=str(sky_input))
     return run_obstruction(sky_input, config)
@@ -249,7 +253,11 @@ def main(argv=None):
         write_text(args.output, to_json_text(run_irradiation(args.weather, config, sky).to_dict()))
     elif args.command == "yield":
         irradiation = PatchIrradiation.from_dict(read_json(args.irradiation, "irradiation per sky patch", "compute it with the `irradiation` subcommand"), source=str(args.irradiation))
-        obstructed_sky = ObstructedSky.from_dict(read_json(args.obstructed_sky, "obstructed sky description", "compute it with the `obstruction` subcommand"), source=str(args.obstructed_sky))
+        if args.obstructed_sky is None:
+            log.info("No obstructed sky description given: computing without obstruction")
+            obstructed_sky = ObstructedSky.free(irradiation.sky)
+        else:
+            obstructed_sky = ObstructedSky.from_dict(read_json(args.obstructed_sky, "obstructed sky description", "compute it with the `obstruction` subcommand"), source=str(args.obstructed_sky))
         run_yield(irradiation, obstructed_sky, config, args.output_dir)
     elif args.command == "run":
         obstructed_sky = load_or_compute_obstructed_sky(args.sky_input, config)

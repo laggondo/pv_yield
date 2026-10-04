@@ -63,14 +63,19 @@ def test_session_matches_cli_sample_config(session):
 
 
 def test_session_summaries_and_errors():
-    """Loading returns summaries; computing without inputs raises an error naming what is missing."""
+    """Loading returns summaries; computing without weather raises an error; without an obstructed sky description, the sky is free."""
     session = BrowserSession()
-    with pytest.raises(ValueError, match="weather loaded: False"):
+    with pytest.raises(ValueError, match="weather data first"):
         session.compute("{}")
     weather = json.loads(session.load_weather(WEATHER_PATH.read_text(encoding="utf-8"), WEATHER_PATH.name, "pvgis_tmy"))
     assert weather["latitude"] == pytest.approx(48.0) and weather["n_hours"] == 8760
+    free = json.loads(session.compute(json.dumps({"panel": PANEL, "simulation": {"n_sky_nodes": 100}})))
+    assert free["key_figures"]["shading_loss"] == pytest.approx(0.0, abs=1e-12) and free["key_figures"]["sky_view_factor"] == pytest.approx(1.0)
     sky = json.loads(session.load_obstructed_sky(SKY_PATH.read_text(encoding="utf-8"), SKY_PATH.name))
     assert 0 < sky["n_obstructed"] < sky["n_patches"] and sky["method"] == "lidar"
+    assert json.loads(session.compute(json.dumps({"panel": PANEL})))["key_figures"]["shading_loss"] > 0.3
+    session.clear_obstructed_sky()
+    assert json.loads(session.compute(json.dumps({"panel": PANEL})))["key_figures"]["shading_loss"] == pytest.approx(0.0, abs=1e-12)
     assert json.loads(versions())["bokeh"].startswith("3.")
 
 
@@ -105,9 +110,9 @@ def test_browser_helpers():
 
 
 def test_build_site(tmp_path):
-    """The site holds the page, the worker, the package zip and the sample files."""
+    """The site holds the page, the worker and the package zip."""
     site = load_build_site_module().build_site(tmp_path / "site")
-    for path in ("index.html", "app.js", "worker.js", "style.css", "proof/index.html", "samples/Freiburg-pvgis-tmy.csv", "samples/sample_obstructed_sky.json"):
+    for path in ("index.html", "app.js", "worker.js", "style.css", "proof/index.html"):
         assert (site / path).is_file(), path
     with zipfile.ZipFile(site / "pv_yield_estimator.zip") as archive:
         names = archive.namelist()
@@ -132,8 +137,8 @@ def swipe_up_over(page, selector):
 
 @pytest.mark.skipif(os.environ.get("PV_YIELD_BROWSER_TEST") != "1", reason="headless browser test; set PV_YIELD_BROWSER_TEST=1 (needs Playwright and network access to the Pyodide and Bokeh CDNs)")
 def test_browser_page_computes_sample(tmp_path, session):
-    """Headless Chromium as a phone: the page loads Pyodide, searches the site and downloads weather (canned answers), computes the sample with the same key
-    figures as the native session, exports zip and PDF, computes the obstruction from the LiDAR sample, and restores the inputs after a reload; a swipe over a plot scrolls the page."""
+    """Headless Chromium as a phone: the page loads Pyodide, searches the site and downloads weather (canned answers), computes without obstruction and with the sample files (same key
+    figures as the native session), exports zip and PDF, computes the obstruction from the LiDAR sample, and restores the inputs after a reload; a swipe over a plot scrolls the page."""
     sync_api = pytest.importorskip("playwright.sync_api")
     site = load_build_site_module().build_site(tmp_path / "site")
 
@@ -195,10 +200,16 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#site-gps")
             wait_idle()
             assert page.input_value("#site-latitude") == "47.99609" and page.input_value("#site-query").startswith("Rathausplatz") and page.locator("#site-results-label").is_hidden()
-            ### Sample data, without the searched site, so the result matches the native session.
+            ### The sample weather file, without the searched site, so the result matches the native session; first without obstruction (free sky).
             page.fill("#site-latitude", "")
             page.fill("#site-longitude", "")
-            page.click("#load-samples")
+            page.set_input_files("#weather-file", WEATHER_PATH)
+            wait_idle()
+            assert "no obstruction" in page.text_content("#sky-summary")
+            page.click("#compute")
+            wait_idle()
+            assert page.evaluate("window.pvYieldApp.lastResult.key_figures.shading_loss") == pytest.approx(0.0, abs=1e-12)
+            page.set_input_files("#sky-file", SKY_PATH)
             wait_idle()
             page.click("#compute")
             wait_idle()
@@ -227,6 +238,10 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.wait_for_function("['ready', 'error'].includes(document.body.dataset.state) && !document.getElementById('compute').disabled", timeout=300_000)
             assert "Freiburg-pvgis-tmy.csv" in page.text_content("#weather-summary") and "obstructed_sky_2026" in page.text_content("#sky-summary")
             assert page.input_value("#scanner_heading_deg") == "188.1"
+            ### "No obstruction" removes the obstructed sky description again.
+            page.click("#sky-clear")
+            wait_idle()
+            assert "no obstruction" in page.text_content("#sky-summary") and page.is_disabled("#sky-save")
         finally:
             print("\n".join(messages))
             browser.close()

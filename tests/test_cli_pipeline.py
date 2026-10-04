@@ -29,7 +29,7 @@ def test_step_by_step_equals_run(tmp_path):
     main(["obstruction", str(POINT_CLOUD), "-o", str(tmp_path / "sky.json"), "-c", str(SAMPLE_CONFIG)])
     main(["irradiation", str(WEATHER), "--sky", str(tmp_path / "sky.json"), "-o", str(tmp_path / "irradiation.json"), "-c", str(SAMPLE_CONFIG)])
     main(["-c", str(SAMPLE_CONFIG), "yield", str(tmp_path / "irradiation.json"), str(tmp_path / "sky.json"), "-d", str(tmp_path / "steps"), *FAST])
-    main(["run", str(POINT_CLOUD), str(WEATHER), "-d", str(tmp_path / "run"), "-c", str(SAMPLE_CONFIG), "-m", "orientation.tilt_step_deg=10", "orientation.azimuth_step_deg=30"])
+    main(["run", "-s", str(POINT_CLOUD), "-w", str(WEATHER), "-d", str(tmp_path / "run"), "-c", str(SAMPLE_CONFIG), "-m", "orientation.tilt_step_deg=10", "orientation.azimuth_step_deg=30"])
     assert key_figures(tmp_path / "steps") == pytest.approx(key_figures(tmp_path / "run"), rel=1e-5)
     results = json.loads((tmp_path / "steps" / "results.json").read_text())
     assert results["config"]["panel"]["tilt_deg"] == 15 and results["key_figures"]["sky_view_factor_horizontal"] == pytest.approx(0.5500, abs=1e-4)
@@ -46,10 +46,22 @@ def test_step_by_step_equals_run(tmp_path):
 
 def test_run_from_sky_description_with_optimized_orientation(tmp_path):
     """`run` also takes an obstructed sky description; an unset tilt is optimized."""
-    main(["run", str(SAMPLE_SKY), str(WEATHER), "-d", str(tmp_path), *FAST, "panel.tilt_deg=null", "panel.azimuth_deg=180"])
+    main(["run", "-s", str(SAMPLE_SKY), "-w", str(WEATHER), "-d", str(tmp_path), *FAST, "panel.tilt_deg=null", "panel.azimuth_deg=180"])
     results = json.loads((tmp_path / "results.json").read_text())
     assert results["optimized_angles"] == ["tilt_deg"] and results["key_figures"]["tilt_deg"] in range(0, 91, 10)
     assert json.loads((tmp_path / "obstructed_sky.json").read_text())["obstructed"] == json.loads(SAMPLE_SKY.read_text())["obstructed"]
+
+
+def test_without_obstruction(tmp_path):
+    """Without an obstructed sky description, `yield` and `run` compute a free sky: no shading loss, sky view factor 1."""
+    main(["irradiation", str(WEATHER), "-o", str(tmp_path / "irradiation.json"), "-m", "simulation.n_sky_nodes=200"])
+    main(["yield", str(tmp_path / "irradiation.json"), "-d", str(tmp_path / "yield"), *FAST])
+    main(["run", "-w", str(WEATHER), "-d", str(tmp_path / "run"), *FAST, "simulation.n_sky_nodes=200"])
+    for directory in ("yield", "run"):
+        results = json.loads((tmp_path / directory / "results.json").read_text())
+        assert results["key_figures"]["shading_loss"] == pytest.approx(0.0, abs=1e-12) and results["key_figures"]["sky_view_factor_horizontal"] == pytest.approx(1.0)
+        assert results["inputs"]["obstructed_sky"]["method"] == "none"
+    assert key_figures(tmp_path / "yield") == pytest.approx(key_figures(tmp_path / "run"), rel=1e-6)
 
 
 def test_yield_rejects_mismatched_sky(tmp_path):
@@ -102,7 +114,7 @@ def test_weather_download_with_site_search_and_fallback(tmp_path, monkeypatch, f
     main(["weather", "-o", str(tmp_path / "fallback.json"), "-m", "site.latitude=48.0", "site.longitude=7.85", "weather.end_year=2024", "weather.n_years=1"])
     assert "open-meteo" in requests[-1] and json.loads((tmp_path / "fallback.json").read_text())["latitude"] == 48.0
     requests.clear()
-    arguments = ["run", str(SAMPLE_SKY), "-d", str(tmp_path / "run"), *FAST, "site.latitude=48.0", "site.longitude=7.85", "weather.download_service=open_meteo", "weather.end_year=2024", "weather.n_years=1"]
+    arguments = ["run", "-s", str(SAMPLE_SKY), "-d", str(tmp_path / "run"), *FAST, "site.latitude=48.0", "site.longitude=7.85", "weather.download_service=open_meteo", "weather.end_year=2024", "weather.n_years=1"]
     main(arguments)
     assert len(requests) == 1 and (tmp_path / "run" / "weather_open_meteo_48.000_7.850_2024-2024.json").is_file()
     main(arguments)

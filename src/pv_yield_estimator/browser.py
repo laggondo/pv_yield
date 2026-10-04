@@ -119,34 +119,43 @@ class BrowserSession:
         site = {key: config["site"][key] for key in ("latitude", "longitude", "altitude", "name") if config["site"].get(key) is not None}
         return self.set_obstructed_sky(method.obstructed_sky(sky, data, metadata={"input_file": filename, **site}))
 
+    def clear_obstructed_sky(self):
+        """Forget the obstructed sky description: the next computation assumes no obstruction."""
+        self.obstructed_sky = None
+
     def obstructed_sky_text(self):
         """The current obstructed sky description as JSON file content, for saving."""
         return to_json_text(self.obstructed_sky.to_dict())
 
     def compute(self, config_json):
-        """Compute key figures, monthly values, orientation comparison and plots for a config (JSON text of a partial config, merged over the defaults); returns JSON."""
-        if self.weather is None or self.obstructed_sky is None:
-            raise ValueError(f"Load a weather file and an obstructed sky description first (weather loaded: {self.weather is not None}, obstructed sky loaded: {self.obstructed_sky is not None})")
+        """Compute key figures, monthly values, orientation comparison and plots for a config (JSON text of a partial config, merged over the defaults); returns JSON.
+
+        Without an obstructed sky description, the sky is free (no obstruction), on the discretization of the
+        simulation section.
+        """
+        if self.weather is None:
+            raise ValueError("Load or download weather data first")
         config = merge_configs(default_config(), json.loads(config_json))
+        obstructed_sky = self.obstructed_sky or ObstructedSky.free(SkyDiscretization.from_node_count(**config["simulation"]))
         log_config(config)
         timings = {}
         site = resolve_site(self.weather, **config["site"])
         ### The irradiation depends on the weather, the sky discretization, the site and the simulation settings only.
         irradiation_key = json.dumps([site, config["simulation"]], sort_keys=True)
-        if self.irradiation is None or irradiation_key != self.irradiation_key:
+        if self.irradiation is None or irradiation_key != self.irradiation_key or not self.irradiation.sky.same_as(obstructed_sky.sky):
             start = time.perf_counter()
-            self.irradiation = compute_patch_irradiation(self.weather, self.obstructed_sky.sky, **site, **config["simulation"])
+            self.irradiation = compute_patch_irradiation(self.weather, obstructed_sky.sky, **site, **config["simulation"])
             self.irradiation.metadata["input_file"] = self.weather.metadata.get("input_file", "")
             self.irradiation_key = irradiation_key
             timings["irradiation per sky patch"] = time.perf_counter() - start
         start = time.perf_counter()
-        result = YieldEstimator(self.irradiation, self.obstructed_sky, **config).run()
+        result = YieldEstimator(self.irradiation, obstructed_sky, **config).run()
         key_figures = result.key_figures()
         timings["yield"] = time.perf_counter() - start
         start = time.perf_counter()
-        plots = {name: json_item(plot) for name, plot in result_plots(result, self.obstructed_sky, self.irradiation).items()}
+        plots = {name: json_item(plot) for name, plot in result_plots(result, obstructed_sky, self.irradiation).items()}
         timings["plots"] = time.perf_counter() - start
-        self.last = {"result": result, "config": config, "site": site}
+        self.last = {"result": result, "config": config, "site": site, "obstructed_sky": obstructed_sky}
         weather_distance_km = distance_km(site["latitude"], site["longitude"], self.weather.latitude, self.weather.longitude) if self.weather.latitude is not None else None
         return json.dumps({"config": config, "site": site, "weather_distance_km": weather_distance_km, "key_figures": key_figures, "optimized_angles": result.optimized_angles,
                            "monthly_daily_average": monthly_rows(result), "orientation_comparison": result.orientation_comparison, "plots": plots, "timings": timings})
@@ -162,13 +171,13 @@ class BrowserSession:
         last = self.require_result()
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for name, text in export_files(last["result"], last["config"], last["site"], self.irradiation, self.obstructed_sky).items():
+            for name, text in export_files(last["result"], last["config"], last["site"], self.irradiation, last["obstructed_sky"]).items():
                 archive.writestr(name, text)
-            archive.writestr("obstructed_sky.json", self.obstructed_sky_text())
+            archive.writestr("obstructed_sky.json", to_json_text(last["obstructed_sky"].to_dict()))
         return buffer.getvalue()
 
     def pdf_report(self):
         """PDF report of the latest result as bytes; needs matplotlib, which the worker loads on first use."""
         from pv_yield_estimator.plotting.report import pdf_report
         last = self.require_result()
-        return pdf_report(last["result"], last["config"], last["site"], self.irradiation, self.obstructed_sky)
+        return pdf_report(last["result"], last["config"], last["site"], self.irradiation, last["obstructed_sky"])

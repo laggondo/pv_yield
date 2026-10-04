@@ -85,6 +85,7 @@ const actions = {
   loadObstructedSky: (text, filename) => JSON.parse(session.load_obstructed_sky(text, filename)),
   computeObstruction: async (file, config) => JSON.parse(session.compute_obstruction(await writeFileToPython(file, "/tmp/point_cloud"), file.name, JSON.stringify(config))),
   obstructedSkyText: () => session.obstructed_sky_text(),
+  clearObstructedSky: () => session.clear_obstructed_sky(),
   compute: config => JSON.parse(session.compute(JSON.stringify(config))),
   configYaml: config => browser.config_yaml_from_json(JSON.stringify(config)),
   configFromYaml: (text, filename) => JSON.parse(browser.config_json_from_yaml(text, filename)),

@@ -203,6 +203,11 @@ class ObstructedSky:
             raise ValueError(f"Obstructed flags must have one entry per patch ({sky.n_patches}), got shape {self.obstructed.shape}")
         self.metadata = dict(metadata or {})
 
+    @classmethod
+    def free(cls, sky):
+        """No obstruction at all: the default when no obstructed sky description is given."""
+        return cls(sky, np.zeros(sky.n_patches, dtype=bool), {"method": "none"})
+
     def obstructed_solid_angle_fraction(self):
         """Fraction of the hemisphere's solid angle that is obstructed."""
         solid_angles = self.sky.solid_angles()

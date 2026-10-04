@@ -54,7 +54,7 @@
       <button id="weather-save" class="small" disabled>Save weather file</button>
     </fieldset>
     <fieldset>
-      <legend>Obstructed sky description</legend>
+      <legend>Obstructed sky description (optional)</legend>
       <label>JSON file (from the CLI or saved here) <input type="file" id="sky-file"></label>
       <details id="lidar">
         <summary>… or compute it from a LiDAR point cloud (computers; large files)</summary>
@@ -73,8 +73,11 @@
         </div>
         <button id="lidar-compute" disabled>Compute obstruction</button>
       </details>
-      <div class="summary" id="sky-summary">not loaded</div>
-      <button id="sky-save" class="small" disabled>Save obstructed sky description</button>
+      <div class="summary" id="sky-summary">none: no obstruction (free sky)</div>
+      <div class="buttons">
+        <button id="sky-save" class="small" disabled>Save obstructed sky description</button>
+        <button id="sky-clear" class="small" disabled>No obstruction</button>
+      </div>
     </fieldset>
     <fieldset>
       <legend>Panel</legend>
@@ -90,7 +93,6 @@
     </fieldset>
   </div>
   <div class="buttons">
-    <button id="load-samples" disabled>Load sample data (Freiburg)</button>
     <button id="compute" class="primary" disabled>Compute</button>
   </div>
   <div class="buttons secondary">

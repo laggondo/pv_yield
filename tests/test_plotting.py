@@ -56,7 +56,8 @@ def test_sky_hemisphere_plot(pipeline):
     irradiation, obstructed_sky, _ = pipeline
     n_obstructed = np.count_nonzero(obstructed_sky.obstructed)
     for plot, with_radiation in ((sky_hemisphere_plot(obstructed_sky, irradiation), True), (sky_hemisphere_plot(obstructed_sky), False)):
-        patches, *veil = renderers_of(plot, Patches)
+        ### The patches themselves and, with radiation, the veil over the obstructed ones (renderer order is not guaranteed).
+        patches, *veil = sorted(renderers_of(plot, Patches), key=lambda renderer: -len(renderer.data_source.data["xs"]))
         data = patches.data_source.data
         assert len(data["xs"]) == obstructed_sky.sky.n_patches
         assert list(data["obstructed"]).count("yes") == n_obstructed

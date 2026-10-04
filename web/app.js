@@ -4,8 +4,7 @@
 // Loaded inputs and the form are kept in IndexedDB for the next visit; files can be saved and loaded to move them
 // between devices.
 
-const SAMPLE_WEATHER = { url: "samples/Freiburg-pvgis-tmy.csv", source: "pvgis_tmy" };
-const SAMPLE_SKY = { url: "samples/sample_obstructed_sky.json" };
+const NO_SKY_SUMMARY = "none: no obstruction (free sky)";
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 // Form fields stored for the next visit and filled from a loaded config.
 const FORM_FIELDS = ["site-query", "site-latitude", "site-longitude", "weather-years", "weather-source", "tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare",
@@ -77,11 +76,12 @@ function fail(error) {
 // Enable the buttons that can be used in the current state.
 function updateButtons() {
   const idle = pythonReady && document.body.dataset.state !== "busy";
-  for (const id of ["load-samples", "site-search", "weather-download", "config-save"]) element(id).disabled = !idle;
+  for (const id of ["site-search", "weather-download", "config-save"]) element(id).disabled = !idle;
   element("lidar-compute").disabled = !idle || !element("lidar-file").files.length;
-  element("compute").disabled = !idle || !inputs.weather || !inputs.sky;
+  element("compute").disabled = !idle || !inputs.weather;
   element("weather-save").disabled = !inputs.weather;
   element("sky-save").disabled = !inputs.sky;
+  element("sky-clear").disabled = !idle || !inputs.sky;
   element("export-zip").disabled = element("export-pdf").disabled = !idle || !window.pvYieldApp.lastResult;
 }
 
@@ -428,7 +428,7 @@ async function restoreStoredInputs() {
   const [form, weather, sky, config] = await Promise.all([recall("form"), recall("weather"), recall("sky"), recall("config")]);
   if (config) importedConfig = config;
   setFormValues(form);
-  if (weather) await loadWeather(weather.text, weather.filename, form?.["weather-source"] ?? "auto");
+  if (weather) await loadWeather(weather.text, weather.filename, weather.source ?? "auto");
   if (sky) await loadObstructedSky(sky.text, sky.filename);
   if (form || weather || sky) report("Restored the inputs of the last visit");
   updatePvgisLink();
@@ -446,7 +446,8 @@ for (const id of ["site-latitude", "site-longitude"]) element(id).addEventListen
 element("weather-download").addEventListener("click", () => whileBusy(downloadWeather));
 element("weather-file").addEventListener("change", async event => {
   const file = event.target.files[0];
-  if (file) await whileBusy(async () => loadWeather(await file.text(), file.name, element("weather-source").value));
+  // A new file's format is detected; the format menu only re-reads the loaded file in another format.
+  if (file) await whileBusy(async () => loadWeather(await file.text(), file.name, "auto"));
 });
 element("weather-source").addEventListener("change", async event => {
   if (inputs.weather) await whileBusy(() => loadWeather(inputs.weather.text, inputs.weather.filename, event.target.value));
@@ -459,10 +460,13 @@ element("sky-file").addEventListener("change", async event => {
 element("lidar-file").addEventListener("change", updateButtons);
 element("lidar-compute").addEventListener("click", () => whileBusy(computeObstruction));
 element("sky-save").addEventListener("click", () => saveFile(inputs.sky.filename, inputs.sky.text, "application/json"));
-element("load-samples").addEventListener("click", () => whileBusy(async () => {
-  const [weatherText, skyText] = await Promise.all([fetchText(SAMPLE_WEATHER.url), fetchText(SAMPLE_SKY.url)]);
-  await loadWeather(weatherText, SAMPLE_WEATHER.url.split("/").pop(), SAMPLE_WEATHER.source);
-  await loadObstructedSky(skyText, SAMPLE_SKY.url.split("/").pop());
+element("sky-clear").addEventListener("click", () => whileBusy(async () => {
+  await call("clearObstructedSky");
+  inputs.sky = null;
+  element("sky-summary").textContent = NO_SKY_SUMMARY;
+  element("sky-file").value = "";
+  report("Obstructed sky description removed: computing without obstruction");
+  await remember("sky", null);
 }));
 element("compute").addEventListener("click", () => whileBusy(compute, "computed"));
 for (const id of ENTER_COMPUTES) {
@@ -496,7 +500,7 @@ try {
   await loadScript(`https://cdn.bokeh.org/bokeh/release/bokeh-${versions.bokeh}.min.js`);
   pythonReady = true;
   await whileBusy(restoreStoredInputs);
-  if (document.body.dataset.state === "ready") report("Ready: set the site and load or download weather data, load an obstructed sky description (or the sample data), then compute");
+  if (document.body.dataset.state === "ready") report("Ready: set the site and load or download weather data, optionally load or compute an obstructed sky description, then compute");
 } catch (error) {
   fail(error);
 }
