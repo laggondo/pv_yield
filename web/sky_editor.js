@@ -1,7 +1,8 @@
 // Marking obstructed sky patches by hand (photo method, #17): on photos taken with the phone's camera (camera
 // orientation from the phone's sensors) or loaded from files, and on a map of the sky hemisphere. The sky patches are
 // drawn over the view; tapping a patch toggles it, dragging marks or frees all patches it passes over. On photos, the
-// sky grid can be moved to match the photo (right mouse button or two fingers; see CONTROLS_TEXT). Loaded
+// sky grid can be moved to match the photo (right mouse button or two fingers; see CONTROLS_TEXT). The sky map shows
+// the photos merged onto the hemisphere, and the live camera view shows which patches earlier photos cover. Loaded
 // obstructed sky descriptions (e.g. from LiDAR) are the start state, and the edits are baked into the flags (#12).
 // The camera geometry (sensor angles to camera orientation, projection of the sky nodes to pixels) is computed in
 // Python (core/photo.py); this module only draws and handles input. Photos are assumed to be taken from the panel
@@ -12,6 +13,8 @@ const MAX_PHOTO_PX = 1600;           // longer side of stored photos, to keep me
 const SKY_MAP_PX = 800;
 const SKY_MAP_RADIUS = SKY_MAP_PX / 2 - 40;   // radius of the horizon in the sky map; the compass letters sit outside it
 const OBSTRUCTED_FILL = "rgba(220, 30, 30, 0.45)";
+const COVERED_FILL = "rgba(60, 150, 255, 0.4)";
+const SKY_MAP_BACKGROUND = [91, 127, 166];
 const COMPASS = [["N", 0], ["E", 90], ["S", 180], ["W", 270]];
 const DEFAULT_PHOTO_VIEW = { azimuth_deg: 180, elevation_deg: 15, roll_deg: 0 };   // loaded photos and photos without sensors
 const SHUTTER_KEYS = ["AudioVolumeUp", "AudioVolumeDown", "VolumeUp", "VolumeDown", "Camera", "Enter", " "];
@@ -35,6 +38,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   let stroke = null;                   // {value, changed, before} while marking
   let alignment = null;                // {pointers, ...} while moving the sky grid over a photo
   const pointers = new Map();          // active pointers (touch: several fingers) by id: {x, y} in canvas pixels
+  let skyMapImage = null;              // ImageData of the photos merged onto the sky map; null: to be recomputed
   const camera = { stream: null, orientation: null, listener: null, eventName: null, projection: null, running: false, requestInFlight: false };
 
   // ---- Geometry ----
@@ -68,6 +72,71 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     return -1;
   }
 
+  // ---- Coverage and the photos merged onto the sky map ----
+
+  // Flag per patch: 1 if a photo shows it completely (all corners in front of the camera and inside the image).
+  function coveredPatches() {
+    const covered = new Uint8Array(sky.triangles.length);
+    for (const view of views) {
+      if (view.kind !== "photo" || !view.projection) continue;
+      const { pixels, in_front } = view.projection, { width, height } = view.view;
+      const inside = node => in_front[node] && pixels[node][0] >= 0 && pixels[node][0] <= width && pixels[node][1] >= 0 && pixels[node][1] <= height;
+      sky.triangles.forEach((triangle, index) => { if (triangle.every(inside)) covered[index] = 1; });
+    }
+    return covered;
+  }
+
+  // Share of the hemisphere's solid angle covered by photos, as text (patches weighted by their solid angle).
+  function percentCovered(covered) {
+    let coveredAngle = 0, totalAngle = 0;
+    sky.triangles.forEach((triangle, index) => {
+      const [a, b, c] = triangle.map(node => sky.nodes[node]);
+      const numerator = Math.abs(a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]));
+      const dot = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+      const solidAngle = 2 * Math.atan2(numerator, 1 + dot(a, b) + dot(b, c) + dot(a, c));
+      totalAngle += solidAngle;
+      if (covered[index]) coveredAngle += solidAngle;
+    });
+    return `${Math.round(100 * coveredAngle / totalAngle)} %`;
+  }
+
+  // The photos mapped onto the sky map: each pixel shows the direction it stands for, taken from the photo that sees
+  // this direction closest to its image centre (least distorted; seams lie halfway between photo centres). Directions
+  // outside all photos keep the background colour. The camera axes come from Python (projectSky).
+  function mergedSkyMapImage() {
+    const image = new ImageData(SKY_MAP_PX, SKY_MAP_PX);
+    const photos = views.filter(view => view.kind === "photo" && view.projection).map(view => {
+      view.pixelData ??= view.image.getContext("2d").getImageData(0, 0, view.image.width, view.image.height).data;
+      return { ...view.projection.camera, width: view.image.width, height: view.image.height, data: view.pixelData };
+    });
+    const centre = SKY_MAP_PX / 2;
+    for (let y = 0; y < SKY_MAP_PX; y++) {
+      for (let x = 0; x < SKY_MAP_PX; x++) {
+        const offset = 4 * (y * SKY_MAP_PX + x);
+        image.data.set([...SKY_MAP_BACKGROUND, 255], offset);
+        const radius = Math.hypot(x - centre, y - centre);
+        if (radius > SKY_MAP_RADIUS) continue;
+        const zenith = radius / SKY_MAP_RADIUS * Math.PI / 2, azimuth = Math.atan2(x - centre, centre - y);
+        const direction = [Math.sin(zenith) * Math.sin(azimuth), Math.sin(zenith) * Math.cos(azimuth), Math.cos(zenith)];
+        let best = null, bestScore = 0;
+        for (const photo of photos) {
+          const depth = direction[0] * photo.forward[0] + direction[1] * photo.forward[1] + direction[2] * photo.forward[2];
+          if (depth <= 0) continue;
+          const u = photo.width / 2 + photo.focal_length_px * (direction[0] * photo.right[0] + direction[1] * photo.right[1] + direction[2] * photo.right[2]) / depth;
+          const v = photo.height / 2 - photo.focal_length_px * (direction[0] * photo.up[0] + direction[1] * photo.up[1] + direction[2] * photo.up[2]) / depth;
+          // Distance to the nearest image edge relative to the image size: > 0 inside, largest at the centre.
+          const score = Math.min(u, photo.width - u, v, photo.height - v) / Math.max(photo.width, photo.height);
+          if (score > bestScore) [best, bestScore] = [{ photo, u, v }, score];
+        }
+        if (best) {
+          const source = 4 * (Math.floor(best.v) * best.photo.width + Math.floor(best.u));
+          image.data.set(best.photo.data.subarray(source, source + 4), offset);
+        }
+      }
+    }
+    return image;
+  }
+
   // ---- Drawing ----
 
   // Canvas pixels per CSS pixel as displayed, so lines and letters keep their size on screen whatever the image size.
@@ -76,12 +145,12 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     return displayedWidth > 0 ? target.width / displayedWidth : 1;
   }
 
-  // Draw the patches (obstructed filled red, all outlined), the horizon and the compass markers onto a 2D context;
-  // `scale` is the canvas's display scale.
-  function drawPatches(target, corners, scale, markers, horizon = []) {
+  // Draw the patches (all outlined; those with a flag in `filled` filled, by default the obstructed ones in red), the
+  // horizon and the compass markers onto a 2D context; `scale` is the canvas's display scale.
+  function drawPatches(target, corners, scale, { markers = [], horizon = [], filled = flags, fillStyle = OBSTRUCTED_FILL } = {}) {
     target.lineWidth = scale;
     target.strokeStyle = "rgba(255, 255, 255, 0.75)";
-    target.fillStyle = OBSTRUCTED_FILL;
+    target.fillStyle = fillStyle;
     corners.forEach((triangle, index) => {
       if (!triangle) return;
       target.beginPath();
@@ -89,7 +158,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       target.lineTo(...triangle[1]);
       target.lineTo(...triangle[2]);
       target.closePath();
-      if (flags[index]) target.fill();
+      if (filled[index]) target.fill();
       target.stroke();
     });
     target.lineWidth = 3 * scale;
@@ -116,18 +185,23 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     const view = views[current];
     if (view.kind === "sky_map") {
       canvas.width = canvas.height = SKY_MAP_PX;
-      context.fillStyle = "#5b7fa6";
-      context.fillRect(0, 0, SKY_MAP_PX, SKY_MAP_PX);
+      if (element("sky-map-photos").checked && views.some(other => other.projection)) {
+        skyMapImage ??= mergedSkyMapImage();
+        context.putImageData(skyMapImage, 0, 0);
+      } else {
+        context.fillStyle = `rgb(${SKY_MAP_BACKGROUND.join(", ")})`;
+        context.fillRect(0, 0, SKY_MAP_PX, SKY_MAP_PX);
+      }
       const markers = COMPASS.map(([label, azimuth]) => {
         const radius = SKY_MAP_RADIUS + 20;
         return { label, x: SKY_MAP_PX / 2 + radius * Math.sin(azimuth * Math.PI / 180), y: SKY_MAP_PX / 2 - radius * Math.cos(azimuth * Math.PI / 180) };
       });
-      drawPatches(context, patchCorners(view), displayScale(canvas), markers);
+      drawPatches(context, patchCorners(view), displayScale(canvas), { markers });
     } else {
       canvas.width = view.image.width;
       canvas.height = view.image.height;
       context.drawImage(view.image, 0, 0);
-      drawPatches(context, patchCorners(view), displayScale(canvas), view.projection?.markers ?? [], view.projection?.horizon ?? []);
+      drawPatches(context, patchCorners(view), displayScale(canvas), { markers: view.projection?.markers, horizon: view.projection?.horizon });
     }
     const count = flags.reduce((sum, flag) => sum + flag, 0);
     element("editor-summary").textContent = `${count} of ${flags.length} sky patches marked as obstructed`;
@@ -144,6 +218,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     });
     const view = views[current];
     element("photo-settings").hidden = view.kind !== "photo";
+    element("sky-map-photos-label").hidden = view.kind !== "sky_map";
     element("editor-controls").textContent = CONTROLS_TEXT[view.kind];
     showPhotoSettings();
   }
@@ -169,6 +244,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       while (view.projectionWanted) {
         view.projectionWanted = false;
         view.projection = await call("projectSky", view.view);
+        skyMapImage = null;
       }
     } finally {
       view.projecting = false;
@@ -203,6 +279,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   function removePhoto() {
     if (views[current].kind !== "photo") return;
     views.splice(current, 1);
+    skyMapImage = null;
     select(Math.min(current, views.length - 1));
   }
 
@@ -375,9 +452,12 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       overlay.height = video.videoHeight;
       const overlayContext = overlay.getContext("2d");
       overlayContext.clearRect(0, 0, overlay.width, overlay.height);
-      drawPatches(overlayContext, patchCorners({ kind: "photo", projection: camera.projection }), displayScale(overlay), camera.projection.markers, camera.projection.horizon);
+      // While aiming, the patches covered by earlier photos matter more than the obstructions marked so far.
+      const covered = coveredPatches();
+      drawPatches(overlayContext, patchCorners({ kind: "photo", projection: camera.projection }), displayScale(overlay), { markers: camera.projection.markers, horizon: camera.projection.horizon, filled: covered, fillStyle: COVERED_FILL });
       const { azimuth_deg, elevation_deg, roll_deg } = camera.projection.view;
-      element("camera-status").textContent = `Camera: azimuth ${azimuth_deg.toFixed(0)}°, elevation ${elevation_deg.toFixed(0)}°, roll ${roll_deg.toFixed(0)}°${camera.orientation.absolute ? "" : " (no compass: correct the azimuth after taking the photo)"}`;
+      element("camera-status").textContent = `Camera: azimuth ${azimuth_deg.toFixed(0)}°, elevation ${elevation_deg.toFixed(0)}°, roll ${roll_deg.toFixed(0)}°; blue: covered by earlier photos (${percentCovered(covered)} of the sky)`
+        + (camera.orientation.absolute ? "" : "; no compass: correct the azimuth after taking the photo");
     }
     requestAnimationFrame(liveOverlay);
   }
@@ -516,6 +596,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   }
 
   for (const key of ["azimuth_deg", "elevation_deg", "roll_deg", "fov_deg"]) element(`photo-${key}`).addEventListener("input", photoSettingChanged);
+  element("sky-map-photos").addEventListener("change", draw);
   element("photo-remove").addEventListener("click", removePhoto);
 
   return {

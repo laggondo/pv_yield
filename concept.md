@@ -87,7 +87,7 @@ The obstructed sky description is the fundamental intermediate result:
   - The orientation of each photo can be corrected so that the horizon and the compass letters drawn over the photo match it (sensor errors, magnetic declination): by moving the sky grid (right mouse button or two fingers; rotating, and zooming for the field of view) or by entering the angles.
 - The sky discretization is overlaid on the photo with a pinhole camera model, which maps the patch edges (great circle arcs) to straight lines, and the user marks obstructed sky patches manually (touchscreen or mouse): a tap toggles a patch, a drag marks or frees all patches it passes over.
 - The same marking works on a map of the sky hemisphere (north up, as in the sky plot), without a photo.
-- Several photos can be combined: all views edit the same flags. Sky patches not covered by any photo keep their start state (free, unless a loaded description marks them).
+- Several photos can be combined: all views edit the same flags. The sky map shows the photos merged onto the hemisphere (where photos overlap, each direction is taken from the photo that sees it closest to its image centre, the least distorted), and while taking a photo, the patches covered by earlier photos are highlighted. Sky patches not covered by any photo keep their start state (free, unless a loaded description marks them).
 - The photos can be saved as a photo set (JSON with the images and their camera views) to continue on another device.
 - No offset between camera and panel (#11): the photo is taken from the panel position, and the page says so. Estimating distances (entered per obstruction, or from two photos) may follow later.
 - Automatic sky detection may follow later.

@@ -109,6 +109,7 @@ def test_session_marking_obstructions():
     assert start["obstructed"] == json.loads(SKY_PATH.read_text())["obstructed"] and start["method"] == "lidar"
     projection = json.loads(session.project_sky(json.dumps({"azimuth_deg": 180, "elevation_deg": 20, "fov_deg": 65, "width": 800, "height": 600})))
     assert len(projection["pixels"]) == len(start["nodes"]) and {marker["label"] for marker in projection["markers"]} == {"SE", "S", "SW", "zenith"}
+    assert projection["camera"]["forward"] == pytest.approx([0, -np.cos(np.radians(20)), np.sin(np.radians(20))]) and projection["camera"]["focal_length_px"] == pytest.approx(400 / np.tan(np.radians(32.5)))
     assert len(projection["horizon"]) == 1 and all(y == pytest.approx(300 + 400 / np.tan(np.radians(32.5)) * np.tan(np.radians(20)), abs=0.1) for _, y in projection["horizon"][0][80:100])
     assert next(marker for marker in projection["markers"] if marker["label"] == "S")["x"] == pytest.approx(400)
     from_device = json.loads(session.project_sky(json.dumps({"alpha_deg": 180, "beta_deg": 110, "gamma_deg": 0, "screen_angle_deg": 0, "fov_deg": 65, "width": 600, "height": 800})))
@@ -284,6 +285,11 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.mouse.up(button="right")
             page.wait_for_timeout(500)
             assert float(page.input_value("#photo-azimuth_deg")) < 175 and page.text_content("#editor-summary") != marked_before
+            ### The sky map shows the photo merged onto the hemisphere: the grey photo's colour south of the zenith, the background in the north.
+            page.click("#editor-views button >> nth=0")
+            mean_colour = "(x, y) => { const data = document.getElementById('editor-canvas').getContext('2d').getImageData(x, y, 10, 10).data; return [0, 1, 2].map(channel => data.filter((_, index) => index % 4 === channel).reduce((sum, value) => sum + value, 0) / 100); }"
+            south, north = page.evaluate(f"({mean_colour})(395, 695)"), page.evaluate(f"({mean_colour})(395, 95)")
+            assert np.abs(np.subtract(south, north)).max() > 20 and page.locator("#sky-map-photos").is_visible()
             page.click("#camera-start")
             wait_idle()
             page.click("#camera-shoot")

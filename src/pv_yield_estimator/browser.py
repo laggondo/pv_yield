@@ -140,6 +140,8 @@ class BrowserSession:
 
         Returns JSON with the camera orientation, the node pixels (x, y), whether each node is in front of the camera,
         and, to help align the photo, the horizon as polylines and labels for the compass directions on it and the zenith.
+        `camera` holds the camera axes (earth coordinates) and the focal length in pixels, with which the page maps the
+        photo onto the sky map.
         """
         view = json.loads(view_json)
         if "alpha_deg" in view:
@@ -156,7 +158,8 @@ class BrowserSession:
         visible = (horizon_directions @ camera.forward > 0.05).astype(int)
         piece_bounds = np.flatnonzero(np.diff(np.concatenate([[0], visible, [0]]))).reshape(-1, 2)
         horizon = [np.round(horizon_pixels[start:end], 1).tolist() for start, end in piece_bounds]
-        return json.dumps({"view": camera.settings(), "pixels": np.round(pixels, 2).tolist(), "in_front": in_front.tolist(), "horizon": horizon,
+        axes = {"right": camera.right.tolist(), "up": camera.up.tolist(), "forward": camera.forward.tolist(), "focal_length_px": camera.focal_length_px}
+        return json.dumps({"view": camera.settings(), "camera": axes, "pixels": np.round(pixels, 2).tolist(), "in_front": in_front.tolist(), "horizon": horizon,
                            "markers": [{"label": label, "x": float(x), "y": float(y)} for label, (x, y), front in zip([*labels, "zenith"], label_pixels, label_in_front) if front]})
 
     def apply_edits(self, obstructed_json, methods_json, details_json="{}"):
