@@ -15,6 +15,7 @@ import os
 import zipfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from pv_yield_estimator.browser import BrowserSession, config_json_from_yaml, config_yaml_from_json, site_name, site_name_result, site_search, site_search_results, versions, weather_downloads
@@ -98,6 +99,34 @@ def test_session_lidar_equals_cli_sample(tmp_path):
     assert summary["n_obstructed"] == sum(expected["obstructed"]) and summary["input_file"] == POINT_CLOUD_PATH.name
 
 
+def test_session_marking_obstructions():
+    """Marking by hand starts from the loaded obstructed sky description, projects its nodes into photos (also from device angles) and replaces it with the edited flags."""
+    session = BrowserSession()
+    free = json.loads(session.start_editing(100))
+    assert free["method"] == "none" and sum(free["obstructed"]) == 0 and len(free["obstructed"]) == len(free["triangles"]) and free["sun_paths"] == []   ### no site, no weather
+    ### With a site, the sun paths of the solstices and equinoxes: in June higher in the south than in December.
+    paths = {path["label"]: np.array(path["directions"]) for path in json.loads(session.start_editing(100, 48.0, 7.85))["sun_paths"]}
+    assert list(paths) == ["21 June", "20 March / 23 September", "21 December"]
+    assert paths["21 June"][:, 2].max() == pytest.approx(np.sin(np.radians(90 - 48.0 + 23.44)), abs=0.01) and paths["21 December"][:, 2].max() == pytest.approx(np.sin(np.radians(90 - 48.0 - 23.44)), abs=0.01)
+    session.load_obstructed_sky(SKY_PATH.read_text(encoding="utf-8"), SKY_PATH.name)
+    start = json.loads(session.start_editing(100))
+    assert start["obstructed"] == json.loads(SKY_PATH.read_text())["obstructed"] and start["method"] == "lidar"
+    projection = json.loads(session.project_sky(json.dumps({"azimuth_deg": 180, "elevation_deg": 20, "fov_deg": 65, "width": 800, "height": 600})))
+    assert len(projection["pixels"]) == len(start["nodes"]) and {marker["label"] for marker in projection["markers"]} == {"SE", "S", "SW", "zenith"}
+    assert projection["camera"]["forward"] == pytest.approx([0, -np.cos(np.radians(20)), np.sin(np.radians(20))]) and projection["camera"]["focal_length_px"] == pytest.approx(400 / np.tan(np.radians(32.5)))
+    assert projection["sun_paths"] == []                                     ### start_editing without a site, and no weather loaded
+    assert len(projection["horizon"]) == 1 and all(y == pytest.approx(300 + 400 / np.tan(np.radians(32.5)) * np.tan(np.radians(20)), abs=0.1) for _, y in projection["horizon"][0][80:100])
+    assert next(marker for marker in projection["markers"] if marker["label"] == "S")["x"] == pytest.approx(400)
+    from_device = json.loads(session.project_sky(json.dumps({"alpha_deg": 180, "beta_deg": 110, "gamma_deg": 0, "screen_angle_deg": 0, "fov_deg": 65, "width": 600, "height": 800})))
+    assert from_device["view"]["azimuth_deg"] == pytest.approx(180) and from_device["view"]["elevation_deg"] == pytest.approx(20)
+    edited = start["obstructed"].copy()
+    edited[0] = 1 - edited[0]
+    summary = json.loads(session.apply_edits(json.dumps(edited), json.dumps(["photo"]), json.dumps({"photos": [projection["view"]]})))
+    assert summary["method"] == "lidar+photo" and summary["n_obstructed"] == sum(edited)
+    saved = json.loads(session.obstructed_sky_text())
+    assert saved["obstructed"] == edited and saved["metadata"]["edits"][0]["n_changed"] == 1 and saved["metadata"]["input_file"] == json.loads(SKY_PATH.read_text())["metadata"]["input_file"]
+
+
 def test_browser_helpers():
     """Site search and weather download URLs, parsing of the search results, config YAML round trip."""
     assert json.loads(site_search("Freiburg")).startswith("https://nominatim.openstreetmap.org/search?q=Freiburg")
@@ -112,7 +141,7 @@ def test_browser_helpers():
 def test_build_site(tmp_path):
     """The site holds the page, the worker and the package zip."""
     site = load_build_site_module().build_site(tmp_path / "site")
-    for path in ("index.html", "app.js", "worker.js", "style.css", "proof/index.html"):
+    for path in ("index.html", "app.js", "sky_editor.js", "worker.js", "style.css", "proof/index.html"):
         assert (site / path).is_file(), path
     with zipfile.ZipFile(site / "pv_yield_estimator.zip") as archive:
         names = archive.namelist()
@@ -138,7 +167,8 @@ def swipe_up_over(page, selector):
 @pytest.mark.skipif(os.environ.get("PV_YIELD_BROWSER_TEST") != "1", reason="headless browser test; set PV_YIELD_BROWSER_TEST=1 (needs Playwright and network access to the Pyodide and Bokeh CDNs)")
 def test_browser_page_computes_sample(tmp_path, session):
     """Headless Chromium as a phone: the page loads Pyodide, searches the site and downloads weather (canned answers), computes without obstruction and with the sample files (same key
-    figures as the native session), exports zip and PDF, computes the obstruction from the LiDAR sample, and restores the inputs after a reload; a swipe over a plot scrolls the page."""
+    figures as the native session), exports zip and PDF, marks obstructions on the sky map, a loaded photo and a camera photo (Chromium's fake camera), computes the obstruction from the
+    LiDAR sample, and restores the inputs after a reload; a swipe over a plot scrolls the page."""
     sync_api = pytest.importorskip("playwright.sync_api")
     site = load_build_site_module().build_site(tmp_path / "site")
 
@@ -155,8 +185,8 @@ def test_browser_page_computes_sample(tmp_path, session):
     launch_options = {}
     if os.environ.get("PV_YIELD_CHROMIUM"):
         launch_options["executable_path"] = os.environ["PV_YIELD_CHROMIUM"]
-    if os.environ.get("PV_YIELD_CHROMIUM_ARGS"):
-        launch_options["args"] = os.environ["PV_YIELD_CHROMIUM_ARGS"].split()
+    ### Chromium's fake camera (a test pattern) without the permission prompt.
+    launch_options["args"] = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] + os.environ.get("PV_YIELD_CHROMIUM_ARGS", "").split()
     if os.environ.get("HTTPS_PROXY"):
         launch_options["proxy"] = {"server": os.environ["HTTPS_PROXY"]}
     expected = json.loads(session.compute(json.dumps({"panel": PANEL})))["key_figures"]
@@ -183,6 +213,14 @@ def test_browser_page_computes_sample(tmp_path, session):
             download_info.value.save_as(path)
             wait_idle()
             return path.read_bytes()
+
+        def tap_canvas(fraction_x, fraction_y):
+            """Click the marking canvas at a fraction of its size; the locator waits until the canvas stops moving (the editor scrolls into view smoothly)."""
+            canvas = page.locator("#editor-canvas")
+            canvas.scroll_into_view_if_needed()
+            page.wait_for_timeout(1000)
+            box = canvas.bounding_box()
+            canvas.click(position={"x": fraction_x * box["width"], "y": fraction_y * box["height"]})
 
         try:
             page.goto(f"{SITE_ORIGIN}/")
@@ -226,6 +264,49 @@ def test_browser_page_computes_sample(tmp_path, session):
                 assert {"results.json", "config.yaml", "hourly.csv", "obstructed_sky.json"} <= set(archive.namelist())
             assert download("#export-pdf").startswith(b"%PDF")
             assert b"tilt_deg: 15" in download("#config-save")
+            ### Marking obstructions by hand, starting from the sample: on the sky map, on a loaded photo and on a camera photo.
+            n_sample_obstructed = sum(json.loads(SKY_PATH.read_text())["obstructed"])
+            page.click("#photo summary")
+            page.click("#sky-edit")
+            wait_idle()
+            assert f"{n_sample_obstructed} of" in page.text_content("#editor-summary")
+            tap_canvas(0.52, 0.48)                       ### near the zenith, free in the sample; "Mark" is the default mode
+            page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map')", timeout=60_000)
+            assert f"{n_sample_obstructed} of" not in page.text_content("#editor-summary")
+            photo_path = tmp_path / "sky.png"
+            pytest.importorskip("matplotlib.pyplot").imsave(photo_path, np.full((300, 400, 3), 0.7))
+            page.set_input_files("#photo-file", photo_path)
+            wait_idle()
+            assert page.input_value("#photo-azimuth_deg") == "180" and page.input_value("#photo-elevation_deg") == "15" and page.locator("#editor-views button").count() == 2
+            ### The patch in the photo's centre may be obstructed or free in the sample: marking and then freeing it changes it at least once.
+            tap_canvas(0.5, 0.5)
+            page.click("#mode-free")
+            tap_canvas(0.5, 0.5)
+            page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map+photo')", timeout=60_000)
+            marked_before = page.text_content("#editor-summary")
+            ### Aligning the photo: dragging the sky grid to the right with the right mouse button turns the camera to the left (east of south).
+            box = page.locator("#editor-canvas").bounding_box()
+            page.mouse.move(box["x"] + 0.5 * box["width"], box["y"] + 0.5 * box["height"])
+            page.mouse.down(button="right")
+            page.mouse.move(box["x"] + 0.7 * box["width"], box["y"] + 0.5 * box["height"], steps=5)
+            page.mouse.up(button="right")
+            page.wait_for_timeout(500)
+            assert float(page.input_value("#photo-azimuth_deg")) < 175 and page.text_content("#editor-summary") == marked_before
+            ### The sky map shows the photo merged onto the hemisphere: the grey photo's colour south of the zenith, the background in the north.
+            page.click("#editor-views button >> nth=0")
+            mean_colour = "(x, y) => { const data = document.getElementById('editor-canvas').getContext('2d').getImageData(x, y, 10, 10).data; return [0, 1, 2].map(channel => data.filter((_, index) => index % 4 === channel).reduce((sum, value) => sum + value, 0) / 100); }"
+            south, north = page.evaluate(f"({mean_colour})(395, 695)"), page.evaluate(f"({mean_colour})(395, 95)")
+            assert np.abs(np.subtract(south, north)).max() > 20 and page.locator("#sky-map-photos").is_visible()
+            page.click("#camera-start")
+            wait_idle()
+            page.click("#camera-shoot")
+            wait_idle()
+            assert page.locator("#editor-views button").count() == 3 and page.locator("#camera").is_hidden()
+            assert json.loads(download("#photos-save"))["kind"] == "photo_set"
+            ### Cancel: back to the sample, as before marking.
+            page.click("#editor-cancel")
+            wait_idle()
+            assert page.locator("#editor").is_hidden() and f"sample_obstructed_sky.json: {n_sample_obstructed} of" in page.text_content("#sky-summary")
             ### Obstruction from the LiDAR sample with the sample config's settings.
             page.click("#lidar summary")
             page.fill("#scanner_heading_deg", "188.1")

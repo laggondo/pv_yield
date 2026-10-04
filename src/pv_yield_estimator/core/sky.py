@@ -208,6 +208,28 @@ class ObstructedSky:
         """No obstruction at all: the default when no obstructed sky description is given."""
         return cls(sky, np.zeros(sky.n_patches, dtype=bool), {"method": "none"})
 
+    def contributing_methods(self):
+        """The methods that produced this description, in order (e.g. ["lidar", "photo"]); empty for the free sky."""
+        if self.metadata.get("methods"):
+            return list(self.metadata["methods"])
+        return [self.metadata["method"]] if self.metadata.get("method") not in (None, "", "none") else []
+
+    def edited(self, obstructed, methods, details=None):
+        """Copy with obstructed flags marked by hand (photo method, sky map), on the same discretization (#12).
+
+        The edits are baked into the flags; the metadata keeps the original entries and records the contributing
+        methods (`methods`, joined as `method`, e.g. "lidar+photo") and one entry per editing session under `edits`
+        with its date, method(s), the number of changed patches and `details` (e.g. the photos' camera views).
+        """
+        obstructed = np.asarray(obstructed, dtype=bool)
+        if obstructed.shape != self.obstructed.shape:
+            raise ValueError(f"Edited obstructed flags must have one entry per patch ({self.sky.n_patches}), got shape {obstructed.shape}")
+        all_methods = self.contributing_methods() + [method for method in methods if method not in self.contributing_methods()]
+        edit = {"created": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "methods": list(methods),
+                "n_changed": int(np.count_nonzero(obstructed != self.obstructed)), **(details or {})}
+        metadata = {**self.metadata, "method": "+".join(all_methods) or "none", "methods": all_methods, "edits": [*self.metadata.get("edits", []), edit]}
+        return ObstructedSky(self.sky, obstructed, metadata)
+
     def obstructed_solid_angle_fraction(self):
         """Fraction of the hemisphere's solid angle that is obstructed."""
         solid_angles = self.sky.solid_angles()

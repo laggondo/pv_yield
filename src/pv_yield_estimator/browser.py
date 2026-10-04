@@ -19,14 +19,15 @@ from bokeh.embed import json_item
 from pv_yield_estimator import __version__
 from pv_yield_estimator.config import config_from_yaml, config_to_yaml, default_config, log_config, merge_configs
 from pv_yield_estimator.core.export import export_files, monthly_rows
-from pv_yield_estimator.core.irradiation import compute_patch_irradiation
+from pv_yield_estimator.core.irradiation import compute_patch_irradiation, sun_path_directions
 from pv_yield_estimator.core.obstruction_methods import sky_obstruction_method
 from pv_yield_estimator.core.panel_yield import YieldEstimator
+from pv_yield_estimator.core.photo import CameraView, camera_orientation_from_device
 from pv_yield_estimator.core.sky import ObstructedSky, SkyDiscretization
 from pv_yield_estimator.core.weather import distance_km, load_weather, resolve_site
 from pv_yield_estimator.core.weather_download import parse_site_name, parse_site_search, pvgis_tmy_url, site_name_url, site_search_url, weather_download_candidates
 from pv_yield_estimator.file_format import to_json_text
-from pv_yield_estimator.plotting.interactive import result_plots
+from pv_yield_estimator.plotting.interactive import SUN_PATH_DAYS, result_plots
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +77,14 @@ def config_json_from_yaml(text, filename=""):
     return json.dumps(config_from_yaml(text, source=filename or "<browser>"))
 
 
+def projected_polylines(camera, directions):
+    """A line through the given directions as polylines of pixels in the camera's image, split into pieces where it passes behind the camera (or nearly sideways, where pixels grow without bound)."""
+    pixels, _ = camera.project(directions)
+    visible = (np.asarray(directions) @ camera.forward > 0.05).astype(int)
+    piece_bounds = np.flatnonzero(np.diff(np.concatenate([[0], visible, [0]]))).reshape(-1, 2)
+    return [np.round(pixels[start:end], 1).tolist() for start, end in piece_bounds]
+
+
 class BrowserSession:
     """State of the browser app: the loaded weather data and obstructed sky description, the cached irradiation per sky patch and the latest result."""
 
@@ -85,6 +94,8 @@ class BrowserSession:
         self.irradiation = None
         self.irradiation_key = None
         self.last = None
+        self.editor_base = None
+        self.editor_sun_paths = []
 
     def load_weather(self, content, filename="", source="auto"):
         """Parse a weather file's content with the given weather source (auto: detected); returns a JSON summary for the page."""
@@ -126,6 +137,52 @@ class BrowserSession:
     def obstructed_sky_text(self):
         """The current obstructed sky description as JSON file content, for saving."""
         return to_json_text(self.obstructed_sky.to_dict())
+
+    def start_editing(self, n_sky_nodes=500, latitude=None, longitude=None):
+        """Start marking obstructed sky patches by hand (photos, sky map): the current obstructed sky description is the start state (#12), else a free sky with `n_sky_nodes`.
+
+        Returns the discretization and flags as JSON, plus the sun paths of the solstices and equinoxes (as in the sky
+        plot) for the site: the given coordinates, else those of the weather data; none if the site is unknown.
+        """
+        self.editor_base = self.obstructed_sky or ObstructedSky.free(SkyDiscretization.from_node_count(n_sky_nodes))
+        if latitude is None or longitude is None:
+            latitude, longitude = (self.weather.latitude, self.weather.longitude) if self.weather is not None else (None, None)
+        ### The paths differ from year to year by far less than a patch; the day in UTC covers the whole path.
+        self.editor_sun_paths = [] if latitude is None or longitude is None else [
+            {"label": label, "color": color, "directions": sun_path_directions(f"2025-{month_day}", latitude, longitude, step_minutes=10.0)} for month_day, label, color in SUN_PATH_DAYS]
+        sky = self.editor_base.sky
+        sun_paths = [{**path, "directions": np.round(path["directions"], 6).tolist()} for path in self.editor_sun_paths]
+        return json.dumps({**sky.to_dict(), "obstructed": self.editor_base.obstructed.astype(int).tolist(), "method": self.editor_base.metadata.get("method", ""), "sun_paths": sun_paths})
+
+    def project_sky(self, view_json):
+        """Pixel positions of the editor's sky nodes in a photo, for a camera view (JSON of `CameraView` arguments, or device orientation angles `alpha_deg`, `beta_deg`, `gamma_deg`, `screen_angle_deg` plus `fov_deg`, `width`, `height`).
+
+        Returns JSON with the camera orientation, the node pixels (x, y), whether each node is in front of the camera,
+        and, to help align the photo, the horizon as polylines and labels for the compass directions on it and the zenith.
+        `sun_paths` holds the editor's sun paths as polylines in the photo.
+        `camera` holds the camera axes (earth coordinates) and the focal length in pixels, with which the page maps the
+        photo onto the sky map.
+        """
+        view = json.loads(view_json)
+        if "alpha_deg" in view:
+            view = {**view, **camera_orientation_from_device(**view)}
+        camera = CameraView(**view)
+        pixels, in_front = camera.project(self.editor_base.sky.nodes)
+        labels = {"N": 0, "NE": 45, "E": 90, "SE": 135, "S": 180, "SW": 225, "W": 270, "NW": 315}
+        label_directions = [[np.sin(np.radians(azimuth)), np.cos(np.radians(azimuth)), 0.0] for azimuth in labels.values()] + [[0.0, 0.0, 1.0]]
+        label_pixels, label_in_front = camera.project(label_directions)
+        horizon_azimuths = np.radians(np.arange(0, 361))
+        horizon = projected_polylines(camera, np.stack([np.sin(horizon_azimuths), np.cos(horizon_azimuths), np.zeros_like(horizon_azimuths)], axis=1))
+        sun_paths = [{"label": path["label"], "color": path["color"], "pieces": projected_polylines(camera, path["directions"])} for path in self.editor_sun_paths]
+        axes = {"right": camera.right.tolist(), "up": camera.up.tolist(), "forward": camera.forward.tolist(), "focal_length_px": camera.focal_length_px}
+        return json.dumps({"view": camera.settings(), "camera": axes, "pixels": np.round(pixels, 2).tolist(), "in_front": in_front.tolist(), "horizon": horizon, "sun_paths": sun_paths,
+                           "markers": [{"label": label, "x": float(x), "y": float(y)} for label, (x, y), front in zip([*labels, "zenith"], label_pixels, label_in_front) if front]})
+
+    def apply_edits(self, obstructed_json, methods_json, details_json="{}"):
+        """Use the flags marked by hand as obstructed sky description (edits baked in, on the start state's discretization); returns the JSON summary."""
+        if self.editor_base is None:
+            raise ValueError("Start marking obstructions first")
+        return self.set_obstructed_sky(self.editor_base.edited(json.loads(obstructed_json), json.loads(methods_json), json.loads(details_json)))
 
     def compute(self, config_json):
         """Compute key figures, monthly values, orientation comparison and plots for a config (JSON text of a partial config, merged over the defaults); returns JSON.

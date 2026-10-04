@@ -36,7 +36,27 @@ label input.inline + button { display: block; margin-top: 6px; }
 button.small, label.button { padding: 5px 10px; font-size: 0.9rem; }
 label.button { display: inline-block; margin: 0; border-radius: 6px; border: 1px solid #888; background: #f4f4f4; cursor: pointer; }
 .buttons.secondary { margin-top: 0; }
-details#lidar { margin: 8px 0; }
-details#lidar summary { cursor: pointer; color: #333; }
+details#lidar, details#photo { margin: 8px 0; }
+details#lidar summary, details#photo summary { cursor: pointer; color: #333; }
+.overlay { position: fixed; inset: 0; z-index: 10; overflow-y: auto; background: #fff; padding: 0 16px 16px; }
+.overlay-bar { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; align-items: center; gap: 8px; background: #fff; border-bottom: 1px solid #ddd; padding: 8px 0; }
+.overlay-bar { flex-wrap: wrap; }
+.overlay-bar h2 { margin: 0; font-size: 1.05rem; }
+.mode-switch { display: flex; }
+.mode-switch button { border-radius: 0; }
+.mode-switch button:first-child { border-radius: 6px 0 0 6px; }
+.mode-switch button:last-child { border-radius: 0 6px 6px 0; border-left: none; }
+#mode-mark.selected { background: #c62828; border-color: #c62828; color: #fff; }
+.bar-buttons { display: flex; gap: 8px; }
+body.overlay-open { overflow: hidden; }
+#editor-canvas { display: block; max-width: 100%; max-height: 70vh; touch-action: none; margin: 8px 0; }
+#camera { position: fixed; inset: 0; z-index: 20; background: #000; }
+#camera video, #camera canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+#camera canvas { pointer-events: none; }
+#camera-status { position: absolute; top: 8px; left: 56px; right: 8px; color: #fff; font-size: 0.85rem; text-shadow: 0 0 3px #000; }
+#camera-stop { position: absolute; top: 8px; left: 8px; width: 40px; height: 40px; padding: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.5); color: #fff; border-color: #fff; }
+#camera-shoot { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); width: 72px; height: 72px; padding: 0; border-radius: 50%; background: #fff; border: 6px solid rgba(255, 255, 255, 0.5); background-clip: padding-box; }
+@media (orientation: landscape) { #camera-shoot { left: auto; right: 24px; bottom: 50%; transform: translateY(50%); } }
+button.selected { background: #333; border-color: #333; color: #fff; }
 caption { text-align: left; font-size: 0.9rem; color: #444; padding-bottom: 4px; }
 #plot-daily_bars, #plot-orientation { max-width: 1000px; }

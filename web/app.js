@@ -4,11 +4,13 @@
 // Loaded inputs and the form are kept in IndexedDB for the next visit; files can be saved and loaded to move them
 // between devices.
 
+import { createSkyEditor } from "./sky_editor.js";
+
 const NO_SKY_SUMMARY = "none: no obstruction (free sky)";
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 // Form fields stored for the next visit and filled from a loaded config.
 const FORM_FIELDS = ["site-query", "site-latitude", "site-longitude", "weather-years", "weather-source", "tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare",
-  "scanner_heading_deg", "offset-east", "offset-north", "offset-up", "min_points", "n_sky_nodes"];
+  "scanner_heading_deg", "offset-east", "offset-north", "offset-up", "min_points", "n_sky_nodes", "camera_fov_deg"];
 const ENTER_COMPUTES = ["tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare"];
 
 const pageStart = performance.now();
@@ -78,6 +80,7 @@ function updateButtons() {
   const idle = pythonReady && document.body.dataset.state !== "busy";
   for (const id of ["site-search", "weather-download", "config-save"]) element(id).disabled = !idle;
   element("lidar-compute").disabled = !idle || !element("lidar-file").files.length;
+  element("sky-edit").disabled = !idle;
   element("compute").disabled = !idle || !inputs.weather;
   element("weather-save").disabled = !inputs.weather;
   element("sky-save").disabled = !inputs.sky;
@@ -224,7 +227,8 @@ function currentConfig() {
   return mergeDeep(importedConfig, {
     site: { latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") },
     weather: { source: element("weather-source").value, n_years: requiredNumber("weather-years") },
-    sky_obstruction: { method: "lidar", lidar: { scanner_heading_deg: requiredNumber("scanner_heading_deg"), panel_offset_m: ["offset-east", "offset-north", "offset-up"].map(requiredNumber), min_points: requiredNumber("min_points") } },
+    sky_obstruction: { method: "lidar", lidar: { scanner_heading_deg: requiredNumber("scanner_heading_deg"), panel_offset_m: ["offset-east", "offset-north", "offset-up"].map(requiredNumber), min_points: requiredNumber("min_points") },
+      photo: { fov_deg: requiredNumber("camera_fov_deg") } },
     panel: { tilt_deg: numberOrNull("tilt_deg"), azimuth_deg: numberOrNull("azimuth_deg"), area_m2: requiredNumber("area_m2"), efficiency: requiredNumber("efficiency"), performance_ratio: requiredNumber("performance_ratio") },
     orientation: { compare: parseCompare(element("compare").value) },
     simulation: { n_sky_nodes: requiredNumber("n_sky_nodes") },
@@ -246,6 +250,7 @@ function applyConfig(config) {
   if (lidar.scanner_heading_deg !== undefined) set("scanner_heading_deg", lidar.scanner_heading_deg);
   if (lidar.panel_offset_m) ["offset-east", "offset-north", "offset-up"].forEach((id, index) => set(id, lidar.panel_offset_m[index]));
   if (lidar.min_points !== undefined) set("min_points", lidar.min_points);
+  if (config.sky_obstruction?.photo?.fov_deg !== undefined) set("camera_fov_deg", config.sky_obstruction.photo.fov_deg);
   if (value("simulation", "n_sky_nodes")) set("n_sky_nodes", value("simulation", "n_sky_nodes"));
   importedConfig = config;
   updatePvgisLink();
@@ -275,6 +280,7 @@ async function loadObstructedSky(text, filename) {
   inputs.sky = { text, filename };
   report(`Obstructed sky description loaded: ${filename}`);
   await remember("sky", inputs.sky);
+  if (editor.isOpen) await editor.reload();
 }
 
 async function computeObstruction() {
@@ -288,7 +294,20 @@ async function computeObstruction() {
   showSkySummary(summary, filename);
   report(`Obstructed sky computed from ${file.name}`);
   await remember("sky", inputs.sky);
+  if (editor.isOpen) await editor.reload();
 }
+
+// The obstructed sky description marked by hand (photos, sky map) replaces the loaded one; kept like a loaded file.
+async function skyMarked(summary) {
+  const filename = `obstructed_sky_${(summary.method || "marked").replace(/\+/g, "_")}.json`;
+  inputs.sky = { text: await call("obstructedSkyText"), filename };
+  showSkySummary(summary, filename);
+  updateButtons();
+  await remember("sky", inputs.sky);
+}
+
+const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => requiredNumber("camera_fov_deg"), nSkyNodes: () => requiredNumber("n_sky_nodes"),
+  site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }), onApplied: skyMarked });
 
 // The site's coordinates from the form, or an error asking for them.
 function siteCoordinates() {
@@ -460,14 +479,44 @@ element("sky-file").addEventListener("change", async event => {
 element("lidar-file").addEventListener("change", updateButtons);
 element("lidar-compute").addEventListener("click", () => whileBusy(computeObstruction));
 element("sky-save").addEventListener("click", () => saveFile(inputs.sky.filename, inputs.sky.text, "application/json"));
-element("sky-clear").addEventListener("click", () => whileBusy(async () => {
+async function clearObstructedSky() {
   await call("clearObstructedSky");
   inputs.sky = null;
   element("sky-summary").textContent = NO_SKY_SUMMARY;
   element("sky-file").value = "";
   report("Obstructed sky description removed: computing without obstruction");
   await remember("sky", null);
+  if (editor.isOpen) await editor.reload();
+}
+
+element("sky-clear").addEventListener("click", () => whileBusy(clearObstructedSky));
+// The obstructed sky description when marking started, restored on cancel (marking replaces it with every change).
+let skyBeforeMarking = null;
+element("sky-edit").addEventListener("click", () => whileBusy(async () => {
+  skyBeforeMarking = inputs.sky;
+  await editor.open();
 }));
+element("editor-cancel").addEventListener("click", () => whileBusy(async () => {
+  editor.cancel();
+  if (skyBeforeMarking) await loadObstructedSky(skyBeforeMarking.text, skyBeforeMarking.filename);
+  else await clearObstructedSky();
+  report("Marking cancelled: the obstructed sky description and the photos are as before");
+}));
+// The camera starts right in the tap's handler: iOS grants the motion sensors only then.
+element("camera-start").addEventListener("click", () => whileBusy(editor.startCamera));
+element("camera-shoot").addEventListener("click", () => whileBusy(editor.takePhoto));
+element("camera-stop").addEventListener("click", () => editor.stopCamera());
+element("photo-file").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (file) await whileBusy(() => editor.loadPhotoFile(file));
+  event.target.value = "";
+});
+element("photos-save").addEventListener("click", () => {
+  if (editor.hasPhotos) saveFile("pv_yield_photos.json", editor.photoSetText(), "application/json");
+  else report("No photos to save");
+});
+element("editor-free").addEventListener("click", () => whileBusy(editor.freeAll));
+element("editor-close").addEventListener("click", () => editor.close());
 element("compute").addEventListener("click", () => whileBusy(compute, "computed"));
 for (const id of ENTER_COMPUTES) {
   element(id).addEventListener("keydown", event => { if (event.key === "Enter" && !element("compute").disabled) element("compute").click(); });

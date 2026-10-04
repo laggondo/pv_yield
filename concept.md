@@ -79,16 +79,21 @@ The obstructed sky description is the fundamental intermediate result:
 - A sky patch counts as obstructed if it contains at least a minimum number of points; this filters out noise. The minimum is configurable, either as an absolute count or as a percentage of all points.
 - Accounts for the panel's offset from the scanner position.
 
-**Photo method:**
+**Photo method** (#17, in the browser app; plain JavaScript for drawing and touch input, the camera geometry in Python, `core/photo.py`):
 
 - Input is a photo of the relevant part of the sky, combined with sensor metadata on camera orientation and field of view.
-- The sky discretization is overlaid on the photo, and the user marks obstructed sky patches manually (touchscreen or mouse).
-- Several photos can be combined. Sky patches not covered by any photo count as unobstructed (optional).
-- Starting assumption: the photo is taken from the panel position, so no offset is needed.
-- *Open question:* how to account for an offset between camera and panel position; easy with LiDAR, not trivial for photos.
+  - Photos are taken in the page with the phone's camera; the camera orientation (viewing azimuth, elevation, roll) comes from the absolute device orientation (compass, accelerometer, gyroscope) at the moment of the shot. Existing photos can be loaded, with the orientation entered by hand.
+  - Browsers don't report the camera's field of view; it is an input (default 65° across the longer image side), checked on a photo.
+  - The orientation of each photo can be corrected so that the horizon and the compass letters drawn over the photo match it (sensor errors, magnetic declination): by moving the sky grid (right mouse button or two fingers; rotating, and zooming for the field of view) or by entering the angles.
+- The sky discretization is overlaid on the photo with a pinhole camera model, which maps the patch edges (great circle arcs) to straight lines, and the user marks obstructed sky patches manually (touchscreen or mouse): a tap or drag marks patches as obstructed or frees them, as set by a mode switch, so a stroke never undoes neighbouring marks.
+- The views show the sun paths of the solstices and equinoxes for the site (as in the sky plot), so the photos can focus on the part of the sky that matters; without a known site they are left out.
+- The same marking works on a map of the sky hemisphere (north up, as in the sky plot), without a photo; it can be zoomed for precise marking.
+- Several photos can be combined: all views edit the same flags. The sky map shows the photos merged onto the hemisphere (where photos overlap, each direction is taken from the photo that sees it closest to its image centre, the least distorted), and while taking a photo, the patches covered by earlier photos are highlighted. Sky patches not covered by any photo keep their start state (free, unless a loaded description marks them).
+- The photos can be saved as a photo set (JSON with the images and their camera views) to continue on another device.
+- No offset between camera and panel (#11): the photo is taken from the panel position, and the page says so. Estimating distances (entered per obstruction, or from two photos) may follow later.
 - Automatic sky detection may follow later.
 
-*Open question:* combining methods, e.g. correcting a LiDAR result manually in the photo view.
+**Combining methods** (#12): a loaded or computed obstructed sky description (e.g. from LiDAR) is the start state of the manual marking, so a LiDAR result can be corrected on photos or on the sky map. The edits are baked into the flags (no separate layer; the file format stays the same). The metadata keeps the original entries and records the contributing methods in order (`methods`, e.g. `[lidar, photo]`, joined as `method: lidar+photo`) and one entry per editing session under `edits` (date, methods, number of changed patches, the photos' camera views).
 
 ### Irradiation and yield
 
@@ -118,7 +123,7 @@ Brings in the sun position over the year and the weather data, and produces the 
 
 - Object-oriented implementation. Where several methods produce the same result (sky obstruction, weather data source), they share a common interface, so further methods can be added easily.
 - Reimplement rather than import modules from `legacy_code/`.
-- First version: only the LiDAR method for the obstructed sky description.
+- First version: only the LiDAR method for the obstructed sky description; the photo method followed in bundle 5.
 - One internal config dict holds all user choices and parameters; it can be exported to and imported from YAML.
 - Core functionality and algorithms live in a library (a Python package within this repository), used by all front ends: the browser app and a command-line app (CLI) for the computer, which suits the LiDAR processing. The core does no user interaction and no file access: it takes data and returns results. User interface and file handling stay in the front ends; plotting is a separate part of the library, so both front ends share the same plots.
 - Browser front end: plain HTML/JavaScript for the user interface, with the Python library running underneath via Pyodide. This gives full control over touch input, camera and sensors, which the photo method needs. Python runs in a Web Worker so the page stays responsive, the Pyodide version is pinned, and each page loads only the packages it needs. The first-visit download (~30 MB for pvlib on top of Pyodide, then cached by the browser) is acceptable.
