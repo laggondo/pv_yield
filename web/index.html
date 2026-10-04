@@ -112,7 +112,11 @@
 
 <!-- Full-screen layer over the page; "Done" returns to the page where it was. -->
 <section id="editor" class="overlay" hidden>
-  <div class="overlay-bar"><h2>Mark obstructions</h2><button id="editor-close" class="primary">Done</button></div>
+  <div class="overlay-bar">
+    <h2>Mark obstructions</h2>
+    <div class="mode-switch" role="group" aria-label="What tapping does"><button id="mode-mark" class="small selected" aria-pressed="true">■ Mark</button><button id="mode-free" class="small" aria-pressed="false">□ Free</button></div>
+    <div class="bar-buttons"><button id="editor-cancel" class="small">Cancel</button><button id="editor-close" class="primary">Done</button></div>
+  </div>
   <p class="hint">Take the photos from the panel position: the patches are drawn as seen from the camera, without any offset. Every change is used for the next computation right away.
     Patches outside all photos stay as they are (free, unless the start state marks them).</p>
   <div class="buttons">

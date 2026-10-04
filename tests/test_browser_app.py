@@ -265,7 +265,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#sky-edit")
             wait_idle()
             assert f"{n_sample_obstructed} of" in page.text_content("#editor-summary")
-            tap_canvas(0.5, 0.3)
+            tap_canvas(0.52, 0.48)                       ### near the zenith, free in the sample; "Mark" is the default mode
             page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map')", timeout=60_000)
             assert f"{n_sample_obstructed} of" not in page.text_content("#editor-summary")
             photo_path = tmp_path / "sky.png"
@@ -273,10 +273,12 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.set_input_files("#photo-file", photo_path)
             wait_idle()
             assert page.input_value("#photo-azimuth_deg") == "180" and page.input_value("#photo-elevation_deg") == "15" and page.locator("#editor-views button").count() == 2
-            marked_before = page.text_content("#editor-summary")
+            ### The patch in the photo's centre may be obstructed or free in the sample: marking and then freeing it changes it at least once.
+            tap_canvas(0.5, 0.5)
+            page.click("#mode-free")
             tap_canvas(0.5, 0.5)
             page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map+photo')", timeout=60_000)
-            assert page.text_content("#editor-summary") != marked_before
+            marked_before = page.text_content("#editor-summary")
             ### Aligning the photo: dragging the sky grid to the right with the right mouse button turns the camera to the left (east of south).
             box = page.locator("#editor-canvas").bounding_box()
             page.mouse.move(box["x"] + 0.5 * box["width"], box["y"] + 0.5 * box["height"])
@@ -284,7 +286,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.mouse.move(box["x"] + 0.7 * box["width"], box["y"] + 0.5 * box["height"], steps=5)
             page.mouse.up(button="right")
             page.wait_for_timeout(500)
-            assert float(page.input_value("#photo-azimuth_deg")) < 175 and page.text_content("#editor-summary") != marked_before
+            assert float(page.input_value("#photo-azimuth_deg")) < 175 and page.text_content("#editor-summary") == marked_before
             ### The sky map shows the photo merged onto the hemisphere: the grey photo's colour south of the zenith, the background in the north.
             page.click("#editor-views button >> nth=0")
             mean_colour = "(x, y) => { const data = document.getElementById('editor-canvas').getContext('2d').getImageData(x, y, 10, 10).data; return [0, 1, 2].map(channel => data.filter((_, index) => index % 4 === channel).reduce((sum, value) => sum + value, 0) / 100); }"
@@ -296,7 +298,10 @@ def test_browser_page_computes_sample(tmp_path, session):
             wait_idle()
             assert page.locator("#editor-views button").count() == 3 and page.locator("#camera").is_hidden()
             assert json.loads(download("#photos-save"))["kind"] == "photo_set"
-            page.click("#editor-close")
+            ### Cancel: back to the sample, as before marking.
+            page.click("#editor-cancel")
+            wait_idle()
+            assert page.locator("#editor").is_hidden() and f"sample_obstructed_sky.json: {n_sample_obstructed} of" in page.text_content("#sky-summary")
             ### Obstruction from the LiDAR sample with the sample config's settings.
             page.click("#lidar summary")
             page.fill("#scanner_heading_deg", "188.1")

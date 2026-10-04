@@ -1,7 +1,8 @@
 // Marking obstructed sky patches by hand (photo method, #17): on photos taken with the phone's camera (camera
 // orientation from the phone's sensors) or loaded from files, and on a map of the sky hemisphere. The sky patches are
-// drawn over the view; tapping a patch toggles it, dragging marks or frees all patches it passes over. On photos, the
-// sky grid can be moved to match the photo (right mouse button or two fingers; see CONTROLS_TEXT). The sky map shows
+// drawn over the view; tapping or dragging marks the patches as obstructed or frees them, as set by the mode switch.
+// On photos, the sky grid can be moved to match the photo, and the sky map can be zoomed (right mouse button or two
+// fingers; see CONTROLS_TEXT). The sky map shows
 // the photos merged onto the hemisphere, and the live camera view shows which patches earlier photos cover. Loaded
 // obstructed sky descriptions (e.g. from LiDAR) are the start state, and the edits are baked into the flags (#12).
 // The camera geometry (sensor angles to camera orientation, projection of the sky nodes to pixels) is computed in
@@ -19,10 +20,13 @@ const COMPASS = [["N", 0], ["E", 90], ["S", 180], ["W", 270]];
 const DEFAULT_PHOTO_VIEW = { azimuth_deg: 180, elevation_deg: 15, roll_deg: 0 };   // loaded photos and photos without sensors
 const SHUTTER_KEYS = ["AudioVolumeUp", "AudioVolumeDown", "VolumeUp", "VolumeDown", "Camera", "Enter", " "];
 const CONTROLS_TEXT = {
-  sky_map: "Tap or click a sky patch to mark it as obstructed (red) or free again; drag to mark or free several.",
-  photo: "Mark patches: tap or click, drag for several. Align the sky grid with the photo: drag with the right mouse button (Shift: rotate) and use the mouse wheel for the field of view; "
+  sky_map: "Tap or click sky patches to mark them as obstructed (red) or free them, as set by the switch at the top; drag for several. "
+    + "Zoom with the mouse wheel or by pinching; move the zoomed map by dragging with the right mouse button or two fingers.",
+  photo: "Tap or click sky patches to mark them as obstructed (red) or free them, as set by the switch at the top; drag for several. "
+    + "Align the sky grid with the photo: drag with the right mouse button (Shift: rotate) and use the mouse wheel for the field of view; "
     + "on touch screens, drag with two fingers, twist to rotate and pinch for the field of view.",
 };
+const MAX_SKY_MAP_ZOOM = 10;
 
 // Create the editor on the page's elements; `call` runs a worker action, `report` logs, `onApplied(summary)` is called
 // after the marked flags were sent to Python as the new obstructed sky description.
@@ -38,7 +42,10 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   let stroke = null;                   // {value, changed, before} while marking
   let alignment = null;                // {pointers, ...} while moving the sky grid over a photo
   const pointers = new Map();          // active pointers (touch: several fingers) by id: {x, y} in canvas pixels
-  let skyMapImage = null;              // ImageData of the photos merged onto the sky map; null: to be recomputed
+  let skyMapPhotos = null;             // canvas with the photos merged onto the sky map; null: to be recomputed
+  const skyMapZoom = { factor: 1, x: 0, y: 0 };   // sky map shown at factor × size, shifted by (x, y) canvas pixels
+  let markValue = 1;                   // what tapping sets: 1 marks as obstructed, 0 frees
+  let viewsWhenOpened = [];            // to restore the photos on cancel
   const camera = { stream: null, orientation: null, listener: null, eventName: null, projection: null, running: false, requestInFlight: false };
 
   // ---- Geometry ----
@@ -103,7 +110,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   // The photos mapped onto the sky map: each pixel shows the direction it stands for, taken from the photo that sees
   // this direction closest to its image centre (least distorted; seams lie halfway between photo centres). Directions
   // outside all photos keep the background colour. The camera axes come from Python (projectSky).
-  function mergedSkyMapImage() {
+  function mergedSkyMapCanvas() {
     const image = new ImageData(SKY_MAP_PX, SKY_MAP_PX);
     const photos = views.filter(view => view.kind === "photo" && view.projection).map(view => {
       view.pixelData ??= view.image.getContext("2d").getImageData(0, 0, view.image.width, view.image.height).data;
@@ -134,7 +141,36 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
         }
       }
     }
-    return image;
+    const merged = document.createElement("canvas");
+    merged.width = merged.height = SKY_MAP_PX;
+    merged.getContext("2d").putImageData(image, 0, 0);
+    return merged;
+  }
+
+  // ---- Zooming the sky map ----
+
+  // Keep the zoomed map covering the canvas.
+  function clampSkyMapZoom() {
+    skyMapZoom.factor = Math.max(1, Math.min(MAX_SKY_MAP_ZOOM, skyMapZoom.factor));
+    const smallest = SKY_MAP_PX * (1 - skyMapZoom.factor);
+    skyMapZoom.x = Math.max(smallest, Math.min(0, skyMapZoom.x));
+    skyMapZoom.y = Math.max(smallest, Math.min(0, skyMapZoom.y));
+  }
+
+  // Zoom by a factor about a point (canvas pixels), which stays in place.
+  function zoomSkyMap(factor, [x, y]) {
+    const mapX = (x - skyMapZoom.x) / skyMapZoom.factor, mapY = (y - skyMapZoom.y) / skyMapZoom.factor;
+    skyMapZoom.factor *= factor;
+    clampSkyMapZoom();
+    skyMapZoom.x = x - mapX * skyMapZoom.factor;
+    skyMapZoom.y = y - mapY * skyMapZoom.factor;
+    clampSkyMapZoom();
+  }
+
+  function panSkyMap(dx, dy) {
+    skyMapZoom.x += dx;
+    skyMapZoom.y += dy;
+    clampSkyMapZoom();
   }
 
   // ---- Drawing ----
@@ -185,18 +221,19 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     const view = views[current];
     if (view.kind === "sky_map") {
       canvas.width = canvas.height = SKY_MAP_PX;
+      context.fillStyle = `rgb(${SKY_MAP_BACKGROUND.join(", ")})`;
+      context.fillRect(0, 0, SKY_MAP_PX, SKY_MAP_PX);
+      context.setTransform(skyMapZoom.factor, 0, 0, skyMapZoom.factor, skyMapZoom.x, skyMapZoom.y);
       if (element("sky-map-photos").checked && views.some(other => other.projection)) {
-        skyMapImage ??= mergedSkyMapImage();
-        context.putImageData(skyMapImage, 0, 0);
-      } else {
-        context.fillStyle = `rgb(${SKY_MAP_BACKGROUND.join(", ")})`;
-        context.fillRect(0, 0, SKY_MAP_PX, SKY_MAP_PX);
+        skyMapPhotos ??= mergedSkyMapCanvas();
+        context.drawImage(skyMapPhotos, 0, 0);
       }
       const markers = COMPASS.map(([label, azimuth]) => {
         const radius = SKY_MAP_RADIUS + 20;
         return { label, x: SKY_MAP_PX / 2 + radius * Math.sin(azimuth * Math.PI / 180), y: SKY_MAP_PX / 2 - radius * Math.cos(azimuth * Math.PI / 180) };
       });
-      drawPatches(context, patchCorners(view), displayScale(canvas), { markers });
+      drawPatches(context, patchCorners(view), displayScale(canvas) / skyMapZoom.factor, { markers });
+      context.setTransform(1, 0, 0, 1, 0, 0);
     } else {
       canvas.width = view.image.width;
       canvas.height = view.image.height;
@@ -244,7 +281,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       while (view.projectionWanted) {
         view.projectionWanted = false;
         view.projection = await call("projectSky", view.view);
-        skyMapImage = null;
+        skyMapPhotos = null;
       }
     } finally {
       view.projecting = false;
@@ -279,7 +316,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   function removePhoto() {
     if (views[current].kind !== "photo") return;
     views.splice(current, 1);
-    skyMapImage = null;
+    skyMapPhotos = null;
     select(Math.min(current, views.length - 1));
   }
 
@@ -290,12 +327,18 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     return [(event.clientX - rect.left) * canvas.width / rect.width, (event.clientY - rect.top) * canvas.height / rect.height];
   }
 
+  // The point in the view's own coordinates: canvas pixels, undoing the sky map's zoom.
+  function viewPoint(event) {
+    const [x, y] = canvasPoint(event);
+    if (views[current].kind !== "sky_map") return [x, y];
+    return [(x - skyMapZoom.x) / skyMapZoom.factor, (y - skyMapZoom.y) / skyMapZoom.factor];
+  }
+
   function markAt(event) {
-    const index = patchAt(views[current], canvasPoint(event));
+    const index = patchAt(views[current], viewPoint(event));
     if (index < 0) return;
-    if (stroke.value === null) stroke.value = flags[index] ? 0 : 1;
-    if (flags[index] !== stroke.value) {
-      flags[index] = stroke.value;
+    if (flags[index] !== markValue) {
+      flags[index] = markValue;
       stroke.changed = true;
       draw();
     }
@@ -345,6 +388,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
 
   function align(event) {
     const view = views[current];
+    if (view.kind === "sky_map") return moveSkyMap(event);
     if (alignment.touch) {
       if (pointers.size < 2) return;
       const gesture = touchGesture(), last = alignment.last;
@@ -361,7 +405,23 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     gridChanged(view);
   }
 
-  // ---- Pointer input: marking (left button, one finger) and aligning (right button, two fingers) ----
+  // Zoom and move the sky map with two fingers, or move it with the right mouse button.
+  function moveSkyMap(event) {
+    if (alignment.touch) {
+      if (pointers.size < 2) return;
+      const gesture = touchGesture(), last = alignment.last;
+      panSkyMap(gesture.x - last.x, gesture.y - last.y);
+      if (last.distance > 0) zoomSkyMap(gesture.distance / last.distance, [gesture.x, gesture.y]);
+      alignment.last = gesture;
+    } else {
+      const [x, y] = canvasPoint(event), [lastX, lastY] = alignment.last;
+      panSkyMap(x - lastX, y - lastY);
+      alignment.last = [x, y];
+    }
+    draw();
+  }
+
+  // ---- Pointer input: marking (left button, one finger); aligning a photo or zooming the sky map (right button, two fingers) ----
 
   canvas.addEventListener("contextmenu", event => event.preventDefault());
   canvas.addEventListener("pointerdown", event => {
@@ -369,17 +429,16 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     canvas.setPointerCapture(event.pointerId);
     const [x, y] = canvasPoint(event);
     pointers.set(event.pointerId, { x, y });
-    const isPhoto = views[current].kind === "photo";
-    if (isPhoto && event.pointerType === "touch" && pointers.size === 2) {
-      // A second finger: undo what the first one marked and align instead.
+    if (event.pointerType === "touch" && pointers.size === 2) {
+      // A second finger: undo what the first one marked and align or zoom instead.
       if (stroke) flags.set(stroke.before);
       stroke = null;
       startAlignment(event);
       draw();
-    } else if (isPhoto && event.button === 2) {
+    } else if (event.button === 2) {
       startAlignment(event);
     } else if (event.button === 0 && pointers.size === 1) {
-      stroke = { value: null, changed: false, before: flags.slice() };
+      stroke = { changed: false, before: flags.slice() };
       markAt(event);
     }
   });
@@ -407,11 +466,27 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   canvas.addEventListener("pointercancel", endPointer);
   canvas.addEventListener("wheel", event => {
     const view = views[current];
-    if (view.kind !== "photo") return;
     event.preventDefault();
-    zoomGrid(view, Math.exp(-event.deltaY * 0.001));
-    gridChanged(view);
+    if (view.kind === "sky_map") {
+      zoomSkyMap(Math.exp(-event.deltaY * 0.001), canvasPoint(event));
+      draw();
+    } else {
+      zoomGrid(view, Math.exp(-event.deltaY * 0.001));
+      gridChanged(view);
+    }
   }, { passive: false });
+
+  // ---- Mode switch: mark or free ----
+
+  function setMarkValue(value) {
+    markValue = value;
+    element("mode-mark").classList.toggle("selected", value === 1);
+    element("mode-free").classList.toggle("selected", value === 0);
+    element("mode-mark").setAttribute("aria-pressed", String(value === 1));
+    element("mode-free").setAttribute("aria-pressed", String(value === 0));
+  }
+  element("mode-mark").addEventListener("click", () => setMarkValue(1));
+  element("mode-free").addEventListener("click", () => setMarkValue(0));
 
   // ---- Camera ----
 
@@ -577,6 +652,8 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   }
 
   async function open() {
+    viewsWhenOpened = views.map(view => view.kind === "photo" ? { ...view, view: { ...view.view } } : view);
+    setMarkValue(1);
     element("editor").hidden = false;
     document.body.classList.add("overlay-open");
     await reload();
@@ -586,6 +663,15 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     stopCamera();
     element("editor").hidden = true;
     document.body.classList.remove("overlay-open");
+  }
+
+  // Close and restore the photos (added, removed, aligned) as they were when opened; the page restores the obstructed
+  // sky description.
+  function cancel() {
+    views.splice(0, views.length, ...viewsWhenOpened);
+    current = 0;
+    skyMapPhotos = null;
+    close();
   }
 
   async function freeAll() {
@@ -600,7 +686,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   element("photo-remove").addEventListener("click", removePhoto);
 
   return {
-    open, close, reload, startCamera, stopCamera, takePhoto, loadPhotoFile, photoSetText, freeAll,
+    open, close, cancel, reload, startCamera, stopCamera, takePhoto, loadPhotoFile, photoSetText, freeAll,
     get isOpen() { return !element("editor").hidden; },
     get hasPhotos() { return views.some(view => view.kind === "photo"); },
   };

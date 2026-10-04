@@ -478,7 +478,7 @@ element("sky-file").addEventListener("change", async event => {
 element("lidar-file").addEventListener("change", updateButtons);
 element("lidar-compute").addEventListener("click", () => whileBusy(computeObstruction));
 element("sky-save").addEventListener("click", () => saveFile(inputs.sky.filename, inputs.sky.text, "application/json"));
-element("sky-clear").addEventListener("click", () => whileBusy(async () => {
+async function clearObstructedSky() {
   await call("clearObstructedSky");
   inputs.sky = null;
   element("sky-summary").textContent = NO_SKY_SUMMARY;
@@ -486,8 +486,21 @@ element("sky-clear").addEventListener("click", () => whileBusy(async () => {
   report("Obstructed sky description removed: computing without obstruction");
   await remember("sky", null);
   if (editor.isOpen) await editor.reload();
+}
+
+element("sky-clear").addEventListener("click", () => whileBusy(clearObstructedSky));
+// The obstructed sky description when marking started, restored on cancel (marking replaces it with every change).
+let skyBeforeMarking = null;
+element("sky-edit").addEventListener("click", () => whileBusy(async () => {
+  skyBeforeMarking = inputs.sky;
+  await editor.open();
 }));
-element("sky-edit").addEventListener("click", () => whileBusy(editor.open));
+element("editor-cancel").addEventListener("click", () => whileBusy(async () => {
+  editor.cancel();
+  if (skyBeforeMarking) await loadObstructedSky(skyBeforeMarking.text, skyBeforeMarking.filename);
+  else await clearObstructedSky();
+  report("Marking cancelled: the obstructed sky description and the photos are as before");
+}));
 // The camera starts right in the tap's handler: iOS grants the motion sensors only then.
 element("camera-start").addEventListener("click", () => whileBusy(editor.startCamera));
 element("camera-shoot").addEventListener("click", () => whileBusy(editor.takePhoto));
