@@ -3,7 +3,8 @@
 // drawn over the view; tapping or dragging marks the patches as obstructed or frees them, as set by the mode switch.
 // On photos, the sky grid can be moved to match the photo, and the sky map can be zoomed (right mouse button or two
 // fingers; see CONTROLS_TEXT). The sky map shows
-// the photos merged onto the hemisphere, and the live camera view shows which patches earlier photos cover. Loaded
+// the photos merged onto the hemisphere, and the live camera view shows which patches earlier photos cover. All views
+// show the sun paths of the solstices and equinoxes, so photos can focus on the relevant part of the sky. Loaded
 // obstructed sky descriptions (e.g. from LiDAR) are the start state, and the edits are baked into the flags (#12).
 // The camera geometry (sensor angles to camera orientation, projection of the sky nodes to pixels) is computed in
 // Python (core/photo.py); this module only draws and handles input. Photos are assumed to be taken from the panel
@@ -30,12 +31,13 @@ const MAX_SKY_MAP_ZOOM = 10;
 
 // Create the editor on the page's elements; `call` runs a worker action, `report` logs, `onApplied(summary)` is called
 // after the marked flags were sent to Python as the new obstructed sky description.
-export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyNodes, onApplied }) {
+export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyNodes, site, onApplied }) {
   const canvas = element("editor-canvas");
   const context = canvas.getContext("2d");
   let sky = null;                      // {nodes, triangles}
   let flags = null;                    // Uint8Array, one entry per patch
   let skyMapPixels = null;             // node positions in the sky map
+  let sunPaths = [];                   // [{label, color, directions}] for the site; empty if the site is unknown
   const views = [{ kind: "sky_map", name: "Sky map" }];
   let current = 0;
   const methodsUsed = new Set();
@@ -183,7 +185,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
 
   // Draw the patches (all outlined; those with a flag in `filled` filled, by default the obstructed ones in red), the
   // horizon and the compass markers onto a 2D context; `scale` is the canvas's display scale.
-  function drawPatches(target, corners, scale, { markers = [], horizon = [], filled = flags, fillStyle = OBSTRUCTED_FILL } = {}) {
+  function drawPatches(target, corners, scale, { markers = [], horizon = [], sunPaths = [], filled = flags, fillStyle = OBSTRUCTED_FILL } = {}) {
     target.lineWidth = scale;
     target.strokeStyle = "rgba(255, 255, 255, 0.75)";
     target.fillStyle = fillStyle;
@@ -197,12 +199,22 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       if (filled[index]) target.fill();
       target.stroke();
     });
-    target.lineWidth = 3 * scale;
-    target.strokeStyle = "yellow";
-    for (const piece of horizon) {
+    const drawLine = piece => {
       target.beginPath();
       piece.forEach(([x, y], index) => index ? target.lineTo(x, y) : target.moveTo(x, y));
       target.stroke();
+    };
+    target.lineWidth = 3 * scale;
+    target.strokeStyle = "yellow";
+    horizon.forEach(drawLine);
+    // Sun paths in their colours on a dark outline, visible on sky and photos alike.
+    for (const { color, pieces } of sunPaths) {
+      target.lineWidth = 5 * scale;
+      target.strokeStyle = "rgba(0, 0, 0, 0.6)";
+      pieces.forEach(drawLine);
+      target.lineWidth = 3 * scale;
+      target.strokeStyle = color;
+      pieces.forEach(drawLine);
     }
     target.font = `bold ${Math.round(16 * scale)}px system-ui, sans-serif`;
     target.textAlign = "center";
@@ -232,13 +244,14 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
         const radius = SKY_MAP_RADIUS + 20;
         return { label, x: SKY_MAP_PX / 2 + radius * Math.sin(azimuth * Math.PI / 180), y: SKY_MAP_PX / 2 - radius * Math.cos(azimuth * Math.PI / 180) };
       });
-      drawPatches(context, patchCorners(view), displayScale(canvas) / skyMapZoom.factor, { markers });
+      const skyMapSunPaths = sunPaths.map(({ color, directions }) => ({ color, pieces: [directions.map(skyMapPosition)] }));
+      drawPatches(context, patchCorners(view), displayScale(canvas) / skyMapZoom.factor, { markers, sunPaths: skyMapSunPaths });
       context.setTransform(1, 0, 0, 1, 0, 0);
     } else {
       canvas.width = view.image.width;
       canvas.height = view.image.height;
       context.drawImage(view.image, 0, 0);
-      drawPatches(context, patchCorners(view), displayScale(canvas), { markers: view.projection?.markers, horizon: view.projection?.horizon });
+      drawPatches(context, patchCorners(view), displayScale(canvas), { markers: view.projection?.markers, horizon: view.projection?.horizon, sunPaths: view.projection?.sun_paths });
     }
     const count = flags.reduce((sum, flag) => sum + flag, 0);
     element("editor-summary").textContent = `${count} of ${flags.length} sky patches marked as obstructed`;
@@ -529,7 +542,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       overlayContext.clearRect(0, 0, overlay.width, overlay.height);
       // While aiming, the patches covered by earlier photos matter more than the obstructions marked so far.
       const covered = coveredPatches();
-      drawPatches(overlayContext, patchCorners({ kind: "photo", projection: camera.projection }), displayScale(overlay), { markers: camera.projection.markers, horizon: camera.projection.horizon, filled: covered, fillStyle: COVERED_FILL });
+      drawPatches(overlayContext, patchCorners({ kind: "photo", projection: camera.projection }), displayScale(overlay), { markers: camera.projection.markers, horizon: camera.projection.horizon, sunPaths: camera.projection.sun_paths, filled: covered, fillStyle: COVERED_FILL });
       const { azimuth_deg, elevation_deg, roll_deg } = camera.projection.view;
       element("camera-status").textContent = `Camera: azimuth ${azimuth_deg.toFixed(0)}°, elevation ${elevation_deg.toFixed(0)}°, roll ${roll_deg.toFixed(0)}°; blue: covered by earlier photos (${percentCovered(covered)} of the sky)`
         + (camera.orientation.absolute ? "" : "; no compass: correct the azimuth after taking the photo");
@@ -640,8 +653,13 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
 
   // (Re)start from the current obstructed sky description, e.g. after loading another one.
   async function reload() {
-    const start = await call("startEditing", nSkyNodes());
+    const { latitude, longitude } = site();
+    const start = await call("startEditing", nSkyNodes(), latitude, longitude);
     sky = { nodes: start.nodes, triangles: start.triangles };
+    sunPaths = start.sun_paths;
+    element("sun-path-legend").innerHTML = sunPaths.length
+      ? "Sun paths: " + sunPaths.map(({ label, color }) => `<span style="color: ${color}">━ ${label}</span>`).join(", ")
+      : "Sun paths: set the site or load weather data to show them.";
     flags = Uint8Array.from(start.obstructed);
     skyMapPixels = sky.nodes.map(skyMapPosition);
     methodsUsed.clear();

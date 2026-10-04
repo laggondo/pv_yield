@@ -103,13 +103,18 @@ def test_session_marking_obstructions():
     """Marking by hand starts from the loaded obstructed sky description, projects its nodes into photos (also from device angles) and replaces it with the edited flags."""
     session = BrowserSession()
     free = json.loads(session.start_editing(100))
-    assert free["method"] == "none" and sum(free["obstructed"]) == 0 and len(free["obstructed"]) == len(free["triangles"])
+    assert free["method"] == "none" and sum(free["obstructed"]) == 0 and len(free["obstructed"]) == len(free["triangles"]) and free["sun_paths"] == []   ### no site, no weather
+    ### With a site, the sun paths of the solstices and equinoxes: in June higher in the south than in December.
+    paths = {path["label"]: np.array(path["directions"]) for path in json.loads(session.start_editing(100, 48.0, 7.85))["sun_paths"]}
+    assert list(paths) == ["21 June", "20 March / 23 September", "21 December"]
+    assert paths["21 June"][:, 2].max() == pytest.approx(np.sin(np.radians(90 - 48.0 + 23.44)), abs=0.01) and paths["21 December"][:, 2].max() == pytest.approx(np.sin(np.radians(90 - 48.0 - 23.44)), abs=0.01)
     session.load_obstructed_sky(SKY_PATH.read_text(encoding="utf-8"), SKY_PATH.name)
     start = json.loads(session.start_editing(100))
     assert start["obstructed"] == json.loads(SKY_PATH.read_text())["obstructed"] and start["method"] == "lidar"
     projection = json.loads(session.project_sky(json.dumps({"azimuth_deg": 180, "elevation_deg": 20, "fov_deg": 65, "width": 800, "height": 600})))
     assert len(projection["pixels"]) == len(start["nodes"]) and {marker["label"] for marker in projection["markers"]} == {"SE", "S", "SW", "zenith"}
     assert projection["camera"]["forward"] == pytest.approx([0, -np.cos(np.radians(20)), np.sin(np.radians(20))]) and projection["camera"]["focal_length_px"] == pytest.approx(400 / np.tan(np.radians(32.5)))
+    assert projection["sun_paths"] == []                                     ### start_editing without a site, and no weather loaded
     assert len(projection["horizon"]) == 1 and all(y == pytest.approx(300 + 400 / np.tan(np.radians(32.5)) * np.tan(np.radians(20)), abs=0.1) for _, y in projection["horizon"][0][80:100])
     assert next(marker for marker in projection["markers"] if marker["label"] == "S")["x"] == pytest.approx(400)
     from_device = json.loads(session.project_sky(json.dumps({"alpha_deg": 180, "beta_deg": 110, "gamma_deg": 0, "screen_angle_deg": 0, "fov_deg": 65, "width": 600, "height": 800})))

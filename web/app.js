@@ -306,7 +306,8 @@ async function skyMarked(summary) {
   await remember("sky", inputs.sky);
 }
 
-const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => requiredNumber("camera_fov_deg"), nSkyNodes: () => requiredNumber("n_sky_nodes"), onApplied: skyMarked });
+const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => requiredNumber("camera_fov_deg"), nSkyNodes: () => requiredNumber("n_sky_nodes"),
+  site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }), onApplied: skyMarked });
 
 // The site's coordinates from the form, or an error asking for them.
 function siteCoordinates() {
