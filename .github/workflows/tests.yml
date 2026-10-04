@@ -34,3 +34,18 @@ jobs:
           cache-environment: true
       - run: python -m playwright install --with-deps chromium
       - run: PV_YIELD_BROWSER_TEST=1 pytest -v tests/test_browser_app.py
+
+  ### Checks against the real web services: CORS headers of Open-Meteo, Nominatim and PVGIS, and Open-Meteo against the
+  ### PVGIS sample (numbers in the log).
+  network:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+      - run: PV_YIELD_NETWORK_TEST=1 pytest -v -s tests/test_weather_services.py

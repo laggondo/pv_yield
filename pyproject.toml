@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Estimate photovoltaic yield from weather data and an obstructed sky description."
 requires-python = ">=3.12"
 ### Runtime dependencies must also be available in Pyodide (bundled, or pure-Python wheels via micropip).
-dependencies = ["numpy", "scipy", "pandas", "pvlib", "pyyaml", "rich", "bokeh", "matplotlib"]
+dependencies = ["numpy", "scipy", "pandas", "pvlib", "pyyaml", "rich", "bokeh", "matplotlib", "contourpy"]
 
 [project.optional-dependencies]
 test = ["pytest"]

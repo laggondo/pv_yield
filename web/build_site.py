@@ -1,4 +1,4 @@
-"""Build the static site of the browser app: the files in web/, the package as a zip for Pyodide, and the sample data.
+"""Build the static site of the browser app: the files in web/ and the package as a zip for Pyodide.
 
 Standard library only, so the GitHub Pages workflow needs no environment. Local use, from the repository root:
     python web/build_site.py && python -m http.server 8000 -d _site
@@ -13,8 +13,6 @@ from pathlib import Path
 REPOSITORY = Path(__file__).resolve().parents[1]
 WEB_DIRECTORY = REPOSITORY / "web"
 PACKAGE_DIRECTORY = REPOSITORY / "src" / "pv_yield_estimator"
-### Sample files offered by the "Load sample data" button, as published path → source.
-SAMPLE_FILES = {"samples/Freiburg-pvgis-tmy.csv": REPOSITORY / "data" / "Freiburg-pvgis-tmy.csv", "samples/sample_obstructed_sky.json": REPOSITORY / "examples" / "sample_obstructed_sky.json"}
 
 
 def zip_package(package_directory, zip_path):
@@ -31,9 +29,6 @@ def build_site(output_directory):
         shutil.rmtree(output_directory)
     shutil.copytree(WEB_DIRECTORY, output_directory, ignore=shutil.ignore_patterns("build_site.py", "__pycache__", "*.pyc"))
     zip_package(PACKAGE_DIRECTORY, output_directory / "pv_yield_estimator.zip")
-    for published_path, source in SAMPLE_FILES.items():
-        (output_directory / published_path).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, output_directory / published_path)
     return output_directory
 
 

@@ -1,17 +1,21 @@
 // Web Worker running Python via Pyodide, so the page stays responsive during long steps.
 // Protocol: the page posts {id, action, args}; the worker answers {id, result} or {id, error}, and posts
 // {type: "progress", message} while loading and {type: "log", line} for Python's output (logging, print).
+// Results are parsed JSON, or a Uint8Array for file downloads (zip, PDF).
 
 // Pinned versions: Pyodide 314.0.7 bundles numpy, pandas, scipy, pyyaml, pygments (for rich) and bokeh 3.9.0 (Python 3.14); pvlib comes from PyPI.
 const PYODIDE_VERSION = "314.0.7";
 const PVLIB_VERSION = "0.16.1";
-const BUNDLED_PACKAGES = ["micropip", "numpy", "pandas", "scipy", "pyyaml", "bokeh", "pygments"];
+const BUNDLED_PACKAGES = ["micropip", "numpy", "pandas", "scipy", "pyyaml", "bokeh", "pygments", "contourpy"];
 const PYPI_PACKAGES = [`pvlib==${PVLIB_VERSION}`, "rich"];
 
 // ?pyodide=<base URL> (passed on from the page URL) loads Pyodide from elsewhere, e.g. a self-hosted copy.
 const pyodideBaseUrl = new URL(self.location.href).searchParams.get("pyodide") ?? `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+// Loaded on first use only (PDF report), to keep the first visit smaller.
+const REPORT_PACKAGES = ["matplotlib"];
 let pyodide = null;
 let session = null;
+let browser = null;
 
 // Report a loading step to the page.
 function progress(message) {
@@ -41,20 +45,52 @@ async function init() {
   pyodide.unpackArchive(await response.arrayBuffer(), "zip", { extractDir: sitePackages });
   progress("Importing pvlib, pandas and bokeh");
   pyodide.runPython(`
-from pv_yield_estimator.browser import BrowserSession, versions
+import pv_yield_estimator.browser as browser
 from pv_yield_estimator.logging_setup import setup_logging
 setup_logging("info")
-session = BrowserSession()
+session = browser.BrowserSession()
 `);
   session = pyodide.globals.get("session");
-  return JSON.parse(pyodide.globals.get("versions")());
+  browser = pyodide.globals.get("browser");
+  return JSON.parse(browser.versions());
+}
+
+// Copy Python bytes into a Uint8Array for the page.
+function bytesResult(pythonBytes) {
+  const array = pythonBytes.toJs();
+  pythonBytes.destroy();
+  return array;
+}
+
+// Write a File (from the page) into Pyodide's file system, so Python reads it without a copy as a JavaScript string.
+async function writeFileToPython(file, path) {
+  pyodide.FS.writeFile(path, new Uint8Array(await file.arrayBuffer()));
+  return path;
+}
+
+async function pdfReport() {
+  progress(`Loading ${REPORT_PACKAGES.join(", ")} for the PDF report (first time only)`);
+  await pyodide.loadPackage(REPORT_PACKAGES);
+  return bytesResult(session.pdf_report());
 }
 
 const actions = {
   init,
+  siteSearchUrl: query => JSON.parse(browser.site_search(query)),
+  siteSearchResults: text => JSON.parse(browser.site_search_results(text)),
+  siteNameUrl: (latitude, longitude) => JSON.parse(browser.site_name(latitude, longitude)),
+  siteNameResult: text => JSON.parse(browser.site_name_result(text)),
+  weatherDownloads: (latitude, longitude, weather) => JSON.parse(browser.weather_downloads(latitude, longitude, JSON.stringify(weather))),
   loadWeather: (content, filename, source) => JSON.parse(session.load_weather(content, filename, source)),
   loadObstructedSky: (text, filename) => JSON.parse(session.load_obstructed_sky(text, filename)),
+  computeObstruction: async (file, config) => JSON.parse(session.compute_obstruction(await writeFileToPython(file, "/tmp/point_cloud"), file.name, JSON.stringify(config))),
+  obstructedSkyText: () => session.obstructed_sky_text(),
+  clearObstructedSky: () => session.clear_obstructed_sky(),
   compute: config => JSON.parse(session.compute(JSON.stringify(config))),
+  configYaml: config => browser.config_yaml_from_json(JSON.stringify(config)),
+  configFromYaml: (text, filename) => JSON.parse(browser.config_json_from_yaml(text, filename)),
+  exportZip: () => bytesResult(session.export_zip()),
+  pdfReport,
 };
 
 self.onmessage = async ({ data: { id, action, args } }) => {

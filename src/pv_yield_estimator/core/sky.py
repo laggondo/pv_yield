@@ -203,6 +203,11 @@ class ObstructedSky:
             raise ValueError(f"Obstructed flags must have one entry per patch ({sky.n_patches}), got shape {self.obstructed.shape}")
         self.metadata = dict(metadata or {})
 
+    @classmethod
+    def free(cls, sky):
+        """No obstruction at all: the default when no obstructed sky description is given."""
+        return cls(sky, np.zeros(sky.n_patches, dtype=bool), {"method": "none"})
+
     def obstructed_solid_angle_fraction(self):
         """Fraction of the hemisphere's solid angle that is obstructed."""
         solid_angles = self.sky.solid_angles()
@@ -212,6 +217,16 @@ class ObstructedSky:
         """Fraction of isotropic diffuse radiation from the sky that reaches a surface with the given normal despite obstructions."""
         weights = np.maximum(self.sky.direction_integrals() @ np.asarray(normal, dtype=float), 0.0)
         return float(weights[~self.obstructed].sum() / weights.sum())
+
+    def boundary_edges(self):
+        """Edges between an obstructed and a free patch, as node index pairs of shape (k, 2): the border of the obstructed sky, e.g. for plots."""
+        edges = np.sort(np.concatenate([self.sky.triangles[:, [i, (i + 1) % 3]] for i in range(3)]), axis=1)
+        obstructed_count = np.tile(self.obstructed.astype(int), 3)
+        unique_edges, edge_index = np.unique(edges, axis=0, return_inverse=True)
+        ### Each inner edge belongs to two patches; it is on the border if exactly one of them is obstructed.
+        n_patches = np.bincount(edge_index, minlength=len(unique_edges))
+        n_obstructed = np.bincount(edge_index, weights=obstructed_count, minlength=len(unique_edges))
+        return unique_edges[(n_patches == 2) & (n_obstructed == 1)]
 
     def to_dict(self):
         """Content of the JSON file, with format version."""

@@ -15,7 +15,7 @@ from pv_yield_estimator.file_format import FORMAT_VERSION_KEY, check_format_vers
 log = logging.getLogger(__name__)
 
 CONFIG_FORMAT_VERSION = 1
-CONFIG_SECTIONS = ("site", "weather", "sky_obstruction", "panel", "simulation", "output")
+CONFIG_SECTIONS = ("site", "weather", "sky_obstruction", "panel", "orientation", "simulation", "output")
 
 
 def default_config():

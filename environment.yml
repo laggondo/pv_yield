@@ -13,5 +13,6 @@ dependencies:
   - pyyaml
   - rich
   - matplotlib
+  - contourpy
   - bokeh=3.9
   - pytest
