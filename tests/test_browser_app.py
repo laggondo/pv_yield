@@ -226,6 +226,8 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.goto(f"{SITE_ORIGIN}/")
             page.wait_for_function("['ready', 'error'].includes(document.body.dataset.state)", timeout=300_000)
             assert page.evaluate("document.body.dataset.state") == "ready", page.text_content("#log")
+            ### Tabs: the first one (site and weather) is shown at the start.
+            assert page.locator("#tab-site").is_visible() and page.locator("#tab-panel").is_hidden() and page.get_attribute("#tabs [data-tab=site]", "aria-selected") == "true"
             ### Site search and weather download.
             page.fill("#site-query", "Freiburg")
             page.click("#site-search")
@@ -252,6 +254,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#compute")
             wait_idle()
             assert page.evaluate("document.body.dataset.state") == "computed", page.text_content("#log")
+            assert page.locator("#tab-results").is_visible() and page.locator("#tab-site").is_hidden() and page.url.endswith("#/results")
             key_figures = page.evaluate("window.pvYieldApp.lastResult.key_figures")
             for plot in ("sky_hemisphere", "monthly_profiles", "daily_bars", "carpet", "orientation"):
                 assert page.locator(f"#plot-{plot} > *").count() > 0, f"plot {plot} not rendered"
@@ -263,9 +266,16 @@ def test_browser_page_computes_sample(tmp_path, session):
             with zipfile.ZipFile(io.BytesIO(download("#export-zip"))) as archive:
                 assert {"results.json", "config.yaml", "hourly.csv", "obstructed_sky.json"} <= set(archive.namelist())
             assert download("#export-pdf").startswith(b"%PDF")
+            page.click("#menu-button")
             assert b"tilt_deg: 15" in download("#config-save")
+            assert page.locator("#menu").is_hidden()
+            ### The log opens from the menu.
+            page.click("#menu-button")
+            page.click("#menu [data-tab=log]")
+            assert page.locator("#log").is_visible() and "Computed" in page.text_content("#log")
             ### Marking obstructions by hand, starting from the sample: on the sky map, on a loaded photo and on a camera photo.
             n_sample_obstructed = sum(json.loads(SKY_PATH.read_text())["obstructed"])
+            page.click("#tabs [data-tab=obstruction]")
             page.click("#photo summary")
             page.click("#sky-edit")
             wait_idle()

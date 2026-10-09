@@ -1,5 +1,6 @@
 // User interface of the browser app; the computation runs in Python in a Web Worker (worker.js).
-// The page state is in document.body.dataset.state: loading, ready, busy, computed or error (used by the smoke test and
+// The page has tabs for the main steps (site and weather, obstruction, panel, results) and a menu (☰) for actions that
+// are not steps (#36); Compute and the status light stay in the top bar. The page state is in document.body.dataset.state: loading, ready, busy, computed or error (used by the smoke test and
 // the red/green status light); progress messages and timings go to the log at the bottom.
 // Loaded inputs and the form are kept in IndexedDB for the next visit; files can be saved and loaded to move them
 // between devices.
@@ -32,6 +33,32 @@ const STATE_TEXTS = { loading: "Loading Python and packages ...", ready: "Ready"
 function setState(state) {
   document.body.dataset.state = state;
   element("status-text").textContent = STATE_TEXTS[state];
+}
+
+// ---- Tabs and menu ----
+
+// Tab panels: the main steps (tab bar) and the panels opened from the menu (log, about).
+const TABS = ["site", "obstruction", "panel", "results", "log", "about"];
+
+// Show one tab panel (unknown names show the first); scrolls to the top when the tab changes.
+function showTab(name) {
+  if (!TABS.includes(name)) name = TABS[0];
+  if (!element(`tab-${name}`).hidden) return;
+  for (const tab of TABS) element(`tab-${tab}`).hidden = tab !== name;
+  for (const button of document.querySelectorAll("#tabs [data-tab]")) button.setAttribute("aria-selected", String(button.dataset.tab === name));
+  window.scrollTo(0, 0);
+}
+
+// Show a tab right away and keep it in the URL (#/name), so a reload stays on it and the back button returns to the
+// previous tab. The hash has a slash, so it never scrolls to an element with that id.
+function openTab(name) {
+  showTab(name);
+  if (location.hash !== `#/${name}`) location.hash = `/${name}`;
+}
+
+function setMenuOpen(open) {
+  element("menu").hidden = !open;
+  element("menu-button").setAttribute("aria-expanded", String(open));
 }
 
 // Add a line to the log panel.
@@ -78,7 +105,7 @@ function fail(error) {
 // Enable the buttons that can be used in the current state.
 function updateButtons() {
   const idle = pythonReady && document.body.dataset.state !== "busy";
-  for (const id of ["site-search", "weather-download", "config-save"]) element(id).disabled = !idle;
+  for (const id of ["site-search", "weather-download", "config-save", "project-save"]) element(id).disabled = !idle;
   element("lidar-compute").disabled = !idle || !element("lidar-file").files.length;
   element("sky-edit").disabled = !idle;
   element("compute").disabled = !idle || !inputs.weather;
@@ -88,14 +115,15 @@ function updateButtons() {
   element("export-zip").disabled = element("export-pdf").disabled = !idle || !window.pvYieldApp.lastResult;
 }
 
-// Run an action while the page is marked busy; errors are reported, not rethrown.
+// Run an action while the page is marked busy; errors are reported, not rethrown. `finalState` may be a function,
+// evaluated after the action.
 async function whileBusy(action, finalState = "ready") {
   setState("busy");
   element("error").hidden = true;
   updateButtons();
   try {
     await action();
-    setState(finalState);
+    setState(typeof finalState === "function" ? finalState() : finalState);
   } catch (error) {
     fail(error);
   }
@@ -434,7 +462,10 @@ async function compute() {
   await remember("form", formValues());
   const result = await call("compute", config);
   window.pvYieldApp.lastResult = result;
+  // The results tab is shown before the plots are drawn, as hidden plots get no size.
   element("results").hidden = false;
+  element("results-empty").hidden = true;
+  openTab("results");
   showKeyFigures(result);
   showMonthly(result.monthly_daily_average);
   showOrientations(result.orientation_comparison);
@@ -454,6 +485,15 @@ async function restoreStoredInputs() {
 }
 
 // ---- Event handlers ----
+
+for (const button of document.querySelectorAll("[data-tab]")) button.addEventListener("click", () => openTab(button.dataset.tab));
+window.addEventListener("hashchange", () => showTab(location.hash.replace(/^#\/?/, "")));
+element("menu-button").addEventListener("click", () => setMenuOpen(element("menu").hidden));
+// A tap anywhere else closes the menu; a tap on a menu entry acts first (a file chooser opens from its label).
+document.addEventListener("click", event => {
+  if (!element("menu").hidden && !element("menu-button").contains(event.target)) setTimeout(() => setMenuOpen(false));
+});
+document.addEventListener("keydown", event => { if (event.key === "Escape") setMenuOpen(false); });
 
 for (const id of FORM_FIELDS) element(id).addEventListener("change", () => remember("form", formValues()));
 element("site-search").addEventListener("click", () => whileBusy(searchSite));
@@ -540,6 +580,7 @@ element("forget").addEventListener("click", () => whileBusy(async () => {
 element("export-zip").addEventListener("click", () => whileBusy(async () => saveFile("pv_yield_results.zip", await call("exportZip"), "application/zip"), "computed"));
 element("export-pdf").addEventListener("click", () => whileBusy(async () => saveFile("pv_yield_report.pdf", await call("pdfReport"), "application/pdf"), "computed"));
 
+showTab(location.hash.replace(/^#\/?/, ""));
 try {
   updateButtons();
   const versions = await call("init");
