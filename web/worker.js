@@ -68,6 +68,48 @@ async function writeFileToPython(file, path) {
   return path;
 }
 
+// Remove a directory of temporary files in Pyodide's file system.
+function removeDirectory(directory) {
+  pyodide.globals.set("directory_to_remove", directory);
+  pyodide.runPython("import shutil; shutil.rmtree(directory_to_remove, ignore_errors=True)");
+}
+
+// Project zip (#37) from the page's inputs: photos (JPEG bytes) and the point cloud (File) go into Pyodide's file
+// system, Python writes the zip there (with the results and the PDF report, if computed); returns the zip's bytes.
+async function saveProject(project, photos, pointCloud) {
+  const directory = "/tmp/project_save";
+  pyodide.FS.mkdirTree(directory);
+  try {
+    project.photos = photos.map(({ bytes, ...photo }, index) => {
+      const path = `${directory}/photo_${index + 1}.jpg`;
+      pyodide.FS.writeFile(path, bytes);
+      return { ...photo, path };
+    });
+    if (pointCloud) project.point_cloud = { path: await writeFileToPython(pointCloud, `${directory}/point_cloud`), filename: pointCloud.name };
+    if (session.has_result()) {
+      progress(`Loading ${REPORT_PACKAGES.join(", ")} for the PDF report (first time only)`);
+      await pyodide.loadPackage(REPORT_PACKAGES);
+    }
+    return pyodide.FS.readFile(session.save_project(JSON.stringify(project), `${directory}/project.zip`));
+  } finally {
+    removeDirectory(directory);
+  }
+}
+
+// Read a project zip (File): the files found, with the photos and the point cloud as bytes.
+async function loadProject(file) {
+  const directory = "/tmp/project_load";
+  pyodide.FS.mkdirTree(directory);
+  try {
+    const project = JSON.parse(session.load_project(await writeFileToPython(file, `${directory}/project.zip`), `${directory}/files`, file.name));
+    for (const photo of project.photos) photo.bytes = pyodide.FS.readFile(photo.path);
+    if (project.point_cloud) project.point_cloud.bytes = pyodide.FS.readFile(project.point_cloud.path);
+    return project;
+  } finally {
+    removeDirectory(directory);
+  }
+}
+
 async function pdfReport() {
   progress(`Loading ${REPORT_PACKAGES.join(", ")} for the PDF report (first time only)`);
   await pyodide.loadPackage(REPORT_PACKAGES);
@@ -95,6 +137,9 @@ const actions = {
   configFromYaml: (text, filename) => JSON.parse(browser.config_json_from_yaml(text, filename)),
   exportZip: () => bytesResult(session.export_zip()),
   pdfReport,
+  reset: () => session.reset(),
+  saveProject,
+  loadProject,
 };
 
 self.onmessage = async ({ data: { id, action, args } }) => {

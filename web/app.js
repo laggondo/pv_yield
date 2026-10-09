@@ -3,7 +3,7 @@
 // are not steps (#36); Compute and the status light stay in the top bar. The page state is in document.body.dataset.state: loading, ready, busy, computed or error (used by the smoke test and
 // the red/green status light); progress messages and timings go to the log at the bottom.
 // Loaded inputs and the form are kept in IndexedDB for the next visit; files can be saved and loaded to move them
-// between devices.
+// between devices, one by one or all at once as a project zip (#37).
 
 import { createSkyEditor } from "./sky_editor.js";
 
@@ -21,7 +21,8 @@ const pendingCalls = new Map();
 let nextCallId = 0;
 let pythonReady = false;
 // Loaded inputs as file content, kept to re-parse (weather format change), to save as files and to store for the next visit.
-const inputs = { weather: null, sky: null };        // {text, filename, source?}
+// The irradiation per sky patch is only kept to save it again, if a loaded project has it (the page computes its own).
+const inputs = { weather: null, sky: null, irradiation: null };        // {text, filename, source?}
 // Config entries without a form field, from a loaded config file; the form's entries are merged over them.
 let importedConfig = {};
 // Latest result, for inspection in the browser console and the smoke test.
@@ -253,7 +254,7 @@ function mergeDeep(base, update) {
 // missing entries take the defaults of the Python functions.
 function currentConfig() {
   return mergeDeep(importedConfig, {
-    site: { latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") },
+    site: { query: element("site-query").value.trim() || null, latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") },
     weather: { source: element("weather-source").value, n_years: requiredNumber("weather-years") },
     sky_obstruction: { method: "lidar", lidar: { scanner_heading_deg: requiredNumber("scanner_heading_deg"), panel_offset_m: ["offset-east", "offset-north", "offset-up"].map(requiredNumber), min_points: requiredNumber("min_points") },
       photo: { fov_deg: requiredNumber("camera_fov_deg") } },
@@ -267,6 +268,7 @@ function currentConfig() {
 function applyConfig(config) {
   const value = (section, key) => config[section]?.[key];
   const set = (id, entry) => { element(id).value = entry ?? ""; };
+  if (value("site", "query") || value("site", "name")) set("site-query", value("site", "query") || value("site", "name"));
   set("site-latitude", value("site", "latitude"));
   set("site-longitude", value("site", "longitude"));
   if (value("weather", "source")) element("weather-source").value = value("weather", "source");
@@ -410,6 +412,73 @@ async function downloadWeather() {
   report(`Downloading weather data: ${candidate.description}`);
   element("weather-summary").textContent = `downloading from ${candidate.service} ...`;
   await loadWeather(await fetchText(candidate.url), candidate.filename, candidate.weather_source);
+}
+
+// ---- Project: all files in one zip (#37) ----
+
+// File name of a saved project: the place (first part of the address) and the date, e.g. Freiburg_im_Breisgau_2026-10-09.pvproject.zip.
+function projectFilename() {
+  const place = element("site-query").value.split(",")[0].normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+  return `${place || "pv_yield"}_${new Date().toISOString().slice(0, 10)}.pvproject.zip`;
+}
+
+// Save all inputs that are there (config, weather, obstructed sky description, photos, point cloud) and, if computed,
+// the results and the PDF report, as one zip.
+async function saveProject() {
+  const project = { config: currentConfig(), weather: inputs.weather, obstructed_sky: inputs.sky, irradiation: inputs.irradiation };
+  const pointCloud = element("lidar-file").files[0] ?? null;
+  report(`Saving the project${pointCloud ? ` with the point cloud ${pointCloud.name} (${format(pointCloud.size / 1e6, 1)} MB)` : ""} ...`);
+  saveFile(projectFilename(), await call("saveProject", project, await editor.photoFiles(), pointCloud), "application/zip");
+}
+
+// Empty the inputs and set the form to the page's defaults (also in the browser's storage), e.g. before loading a project.
+async function resetInputs() {
+  await call("reset");
+  Object.assign(inputs, { weather: null, sky: null, irradiation: null });
+  importedConfig = {};
+  for (const id of FORM_FIELDS) {
+    const field = element(id);
+    field.value = field.tagName === "SELECT" ? ([...field.options].find(option => option.defaultSelected) ?? field.options[0]).value : field.defaultValue;
+  }
+  for (const id of ["weather-file", "sky-file", "lidar-file"]) element(id).value = "";
+  foundPlaces = [];
+  element("site-results-label").hidden = true;
+  element("weather-summary").textContent = "not loaded";
+  element("sky-summary").textContent = NO_SKY_SUMMARY;
+  await editor.setPhotos([]);
+  window.pvYieldApp.lastResult = null;
+  element("results").hidden = true;
+  element("results-empty").hidden = false;
+  await Promise.all([remember("form", formValues()), remember("config", {}), remember("weather", null), remember("sky", null)]);
+}
+
+// Load a project: replaces the current inputs (after a confirmation if there are any); files missing in the project
+// leave their inputs empty or at the defaults. If the project holds results, they are computed again from its inputs.
+async function loadProject(file) {
+  if (!pythonReady) throw new Error("Python is still loading; load the project when the page is ready");
+  const hasInputs = inputs.weather || inputs.sky || editor.hasPhotos || element("lidar-file").files.length;
+  if (hasInputs && !confirm(`Load the project ${file.name}? It replaces the current inputs.`)) return report("Loading the project cancelled");
+  const project = await call("loadProject", file);
+  await resetInputs();
+  if (project.config) {
+    applyConfig(project.config);
+    await remember("config", project.config);
+  }
+  await remember("form", formValues());
+  if (project.weather) await loadWeather(project.weather.text, project.weather.filename, project.weather.source);
+  if (project.obstructed_sky) await loadObstructedSky(project.obstructed_sky.text, project.obstructed_sky.filename);
+  if (project.photos.length) await editor.setPhotos(project.photos);
+  if (project.point_cloud) {
+    // A file input can only be set through a DataTransfer; the point cloud is then used like a picked file.
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([project.point_cloud.bytes], project.point_cloud.filename));
+    element("lidar-file").files = transfer.files;
+    element("lidar").open = true;
+  }
+  if (project.irradiation) inputs.irradiation = project.irradiation;
+  report(`Project loaded: ${file.name} (saved ${project.created} with version ${project.program_version}): ${project.contents.join(", ")}`);
+  if (project.has_results && inputs.weather) await compute();
+  else openTab("site");
 }
 
 // ---- Results ----
@@ -571,6 +640,13 @@ element("config-file").addEventListener("change", async event => {
     await remember("form", formValues());
     report(`Config loaded: ${file.name}`);
   });
+  event.target.value = "";
+});
+const readyOrComputed = () => window.pvYieldApp.lastResult ? "computed" : "ready";
+element("project-save").addEventListener("click", () => whileBusy(saveProject, readyOrComputed));
+element("project-file").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (file) await whileBusy(() => loadProject(file), readyOrComputed);
   event.target.value = "";
 });
 element("forget").addEventListener("click", () => whileBusy(async () => {

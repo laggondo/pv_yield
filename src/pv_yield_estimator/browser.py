@@ -3,7 +3,8 @@
 The page passes file contents and the config as strings and receives JSON strings (or bytes for downloads), so no
 Python objects cross into JavaScript. Network requests (site search, weather download) are made by the page with
 `fetch`; this module builds their URLs and parses the responses. The irradiation per sky patch is cached: changing
-only the panel or orientation sections recomputes just the yield.
+only the panel or orientation sections recomputes just the yield. Projects (all files in one zip, #37) are written to
+and read from Pyodide's file system, where the worker passes the photos and the point cloud as files.
 """
 
 import io
@@ -12,6 +13,7 @@ import logging
 import sys
 import time
 import zipfile
+from pathlib import Path
 
 import numpy as np
 from bokeh.embed import json_item
@@ -26,10 +28,15 @@ from pv_yield_estimator.core.photo import CameraView, camera_orientation_from_de
 from pv_yield_estimator.core.sky import ObstructedSky, SkyDiscretization
 from pv_yield_estimator.core.weather import distance_km, load_weather, resolve_site
 from pv_yield_estimator.core.weather_download import parse_site_name, parse_site_search, pvgis_tmy_url, site_name_url, site_search_url, weather_download_candidates
-from pv_yield_estimator.file_format import to_json_text
+from pv_yield_estimator.file_format import FORMAT_VERSION_KEY, check_format_version, to_json_text
 from pv_yield_estimator.plotting.interactive import SUN_PATH_DAYS, result_plots
+from pv_yield_estimator.project import (CONFIG_NAME, IRRADIATION_NAME, MANIFEST_NAME, OBSTRUCTED_SKY_NAME, PHOTOS_DIRECTORY, PHOTOS_NAME, POINT_CLOUD_STEM, REPORT_NAME, RESULTS_DIRECTORY, WEATHER_STEM,
+                                        find_project_file, project_file_name, read_project_manifest, write_project_zip)
 
 log = logging.getLogger(__name__)
+
+### Photo sets as saved by the page (web/sky_editor.js); in a project, `image_file` names the JPEG in the zip instead of an inline `image`.
+PHOTO_SET_FORMAT_VERSION = 1
 
 
 def versions():
@@ -96,6 +103,10 @@ class BrowserSession:
         self.last = None
         self.editor_base = None
         self.editor_sun_paths = []
+
+    def reset(self):
+        """Forget the loaded inputs, the cached irradiation and the latest result, e.g. before loading a project."""
+        self.__init__()
 
     def load_weather(self, content, filename="", source="auto"):
         """Parse a weather file's content with the given weather source (auto: detected); returns a JSON summary for the page."""
@@ -238,3 +249,85 @@ class BrowserSession:
         from pv_yield_estimator.plotting.report import pdf_report
         last = self.require_result()
         return pdf_report(last["result"], last["config"], last["site"], self.irradiation, last["obstructed_sky"])
+
+    def has_result(self):
+        """Whether there is a result (then a project gets the results and the PDF report)."""
+        return self.last is not None
+
+    def save_project(self, project_json, path):
+        """Write a project zip (#37) to `path` in Pyodide's file system: the page's inputs, plus the latest results and their PDF report if computed; returns `path`.
+
+        `project_json` holds the config, the weather file ({text, filename, source}), the obstructed sky description
+        ({text, filename}), the photos ([{name, taken, view, path}], each JPEG written to `path` by the worker), the
+        point cloud ({path, filename}) and an irradiation file loaded from a project ({text}); each may be missing.
+        The PDF report needs matplotlib, which the worker loads first when there is a result.
+        """
+        project = json.loads(project_json)
+        contents = {CONFIG_NAME: config_to_yaml(merge_configs(default_config(), project.get("config") or {}))}
+        details = {}
+        if weather := project.get("weather"):
+            name = project_file_name(WEATHER_STEM, weather["filename"])
+            contents[name] = weather["text"]
+            details["weather"] = {"file": name, "original_filename": weather["filename"], "source": weather.get("source") or "auto"}
+        if sky := project.get("obstructed_sky"):
+            contents[OBSTRUCTED_SKY_NAME] = sky["text"]
+            details["obstructed_sky"] = {"file": OBSTRUCTED_SKY_NAME, "original_filename": sky["filename"]}
+        if photos := project.get("photos"):
+            entries = []
+            for number, photo in enumerate(photos, start=1):
+                image_file = f"{PHOTOS_DIRECTORY}/photo_{number}.jpg"
+                contents[image_file] = Path(photo["path"])
+                entries.append({"name": photo["name"], "taken": photo["taken"], "view": photo["view"], "image_file": image_file})
+            contents[PHOTOS_NAME] = to_json_text({FORMAT_VERSION_KEY: PHOTO_SET_FORMAT_VERSION, "kind": "photo_set", "photos": entries})
+        if point_cloud := project.get("point_cloud"):
+            name = project_file_name(POINT_CLOUD_STEM, point_cloud["filename"])
+            contents[name] = Path(point_cloud["path"])
+            details["point_cloud"] = {"file": name, "original_filename": point_cloud["filename"]}
+        if irradiation := project.get("irradiation"):
+            contents[IRRADIATION_NAME] = irradiation["text"]
+        if self.last is not None:
+            last = self.last
+            contents[REPORT_NAME] = self.pdf_report()
+            for name, text in export_files(last["result"], last["config"], last["site"], self.irradiation, last["obstructed_sky"]).items():
+                contents[f"{RESULTS_DIRECTORY}/{name}"] = text
+        write_project_zip(path, contents, **details)
+        return path
+
+    def load_project(self, path, directory, filename=""):
+        """Read a project zip (#37) from `path` in Pyodide's file system; returns JSON with the files found, or null for missing ones.
+
+        Text files come as text (the config as dict); the photos and the point cloud are extracted into `directory`
+        and given by path, for the worker to pass on to the page. The session itself is not changed: the page loads
+        the files one by one, as if picked by hand. `has_results` tells whether the project holds results.
+        """
+        source = filename or path
+        try:
+            archive = zipfile.ZipFile(path)
+        except zipfile.BadZipFile as error:
+            raise ValueError(f"{source} is not a zip file ({error}); load a project saved with 'Save project'") from error
+        with archive:
+            manifest = read_project_manifest(archive, source)
+            names = set(archive.namelist())
+            text = lambda name: archive.read(name).decode("utf-8") if name in names else None
+            config_text = text(CONFIG_NAME)
+            weather_name = find_project_file(archive, WEATHER_STEM)
+            weather_details = manifest.get("weather", {})
+            sky_details = manifest.get("obstructed_sky", {})
+            project = {"filename": filename, "created": manifest.get("created"), "program_version": manifest.get("program_version"), "contents": sorted(names - {MANIFEST_NAME}),
+                       "config": config_from_yaml(config_text, f"{source}/{CONFIG_NAME}") if config_text is not None else None,
+                       "weather": {"text": text(weather_name), "filename": weather_details.get("original_filename") or weather_name, "source": weather_details.get("source") or "auto"} if weather_name else None,
+                       "obstructed_sky": {"text": text(OBSTRUCTED_SKY_NAME), "filename": sky_details.get("original_filename") or OBSTRUCTED_SKY_NAME} if OBSTRUCTED_SKY_NAME in names else None,
+                       "irradiation": {"text": text(IRRADIATION_NAME)} if IRRADIATION_NAME in names else None,
+                       "photos": [], "point_cloud": None, "has_results": any(name.startswith(RESULTS_DIRECTORY + "/") for name in names)}
+            if PHOTOS_NAME in names:
+                photo_set = json.loads(text(PHOTOS_NAME))
+                check_format_version(photo_set, PHOTO_SET_FORMAT_VERSION, "Photo set", f"{source}/{PHOTOS_NAME}")
+                for photo in photo_set["photos"]:
+                    if photo["image_file"] not in names:
+                        log.warning(f"{source}: photo {photo['name']!r} has no image {photo['image_file']} in the project; skipped")
+                        continue
+                    project["photos"].append({"name": photo["name"], "taken": photo["taken"], "view": photo["view"], "path": archive.extract(photo["image_file"], directory)})
+            if point_cloud_name := find_project_file(archive, POINT_CLOUD_STEM):
+                project["point_cloud"] = {"path": archive.extract(point_cloud_name, directory), "filename": manifest.get("point_cloud", {}).get("original_filename") or point_cloud_name}
+        log.info(f"Project {source}: {', '.join(project['contents'])}")
+        return json.dumps(project)

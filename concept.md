@@ -21,6 +21,7 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
 - Parts of the method may use the phone's camera, GPS, accelerometer, gyroscope and compass.
 - Parts of the method are well suited for touch screens.
 - The pipeline runs in separate steps, not necessarily in one go. Intermediate results are stored on the device as files (JSON for data, YAML for configs) that can be transferred to other devices, e.g. measure on the phone, analyze on the computer. Offline use is not a priority, but stored results allow some steps to run offline.
+- A project bundles all files of a site in one zip (`project.yaml` with the contents, config, weather, obstructed sky description, photos, point cloud, results and report; #37), to move everything between devices in one go.
 
 ## Inputs
 
