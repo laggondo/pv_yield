@@ -486,6 +486,8 @@ async function resetInputs() {
   element("weather-summary").textContent = "not loaded";
   element("sky-summary").textContent = NO_SKY_SUMMARY;
   await editor.setPhotos([]);
+  // The reset session forgot the start state of marking: start again from a free sky.
+  if (editor.isStarted) await editor.reload();
   window.pvYieldApp.lastResult = null;
   Object.assign(results, { computedKey: null, attemptedKey: null, pendingPlots: null });
   showResultsMessage(NO_RESULTS_MESSAGE);

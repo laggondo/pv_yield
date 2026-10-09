@@ -417,6 +417,11 @@ def test_browser_page_computes_sample(tmp_path, session):
             wait_idle()
             assert page.text_content("#weather-summary") == "not loaded" and page.input_value("#scanner_heading_deg") == "0" and page.locator("#tab-site").is_visible()
             assert page.evaluate("window.pvYieldApp.lastResult") is None
+            ### Marking on the sky map works after a new project (the session was reset), starting from a free sky.
+            page.click("#tabs [data-tab=obstruction]")
+            tap_canvas("sky-map-canvas", 0.52, 0.48)
+            page.wait_for_function("document.getElementById('sky-summary').textContent.includes(': 1 of')", timeout=60_000)
+            assert page.evaluate("document.body.dataset.state") != "error", page.text_content("#log")
         finally:
             print("\n".join(messages))
             browser.close()
