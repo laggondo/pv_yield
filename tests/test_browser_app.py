@@ -453,6 +453,14 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert float(page.input_value("#photo-azimuth_deg")) == pytest.approx(expected_azimuth, abs=0.1)
             page.click("#photo-list .photo-item >> nth=1 >> button >> nth=0")
             assert abs(float(page.input_value("#photo-azimuth_deg")) - expected_azimuth) < 10       ### the wild compass moved the view only a little
+            ### An error shows one line at the top (no traceback); the log has the traceback.
+            bad_sky_path = tmp_path / "not_a_sky.json"
+            bad_sky_path.write_text('{"kind": "something else"}')
+            page.evaluate("document.getElementById('sky-load').open = true")
+            page.set_input_files("#sky-file", bad_sky_path)
+            page.wait_for_function("document.body.dataset.state === 'error'", timeout=60_000)
+            error_text = page.text_content("#error")
+            assert "\n" not in error_text and "Traceback" not in error_text and "details in the log" in error_text and "Traceback" in page.text_content("#log")
         finally:
             print("\n".join(messages))
             browser.close()

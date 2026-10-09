@@ -79,3 +79,9 @@ def test_sample_scan():
     obstructed_sky = method.obstructed_sky(SkyDiscretization.from_node_count(500), points)
     assert obstructed_sky.obstructed.sum() == 626
     assert obstructed_sky.sky_view_factor() == pytest.approx(0.5500, abs=1e-4)
+
+
+def test_read_livox_csv_rejects_other_files():
+    """Another file, e.g. an obstructed sky description, gets a message naming the expected columns instead of a parser error."""
+    with pytest.raises(ValueError, match="Not a Livox CSV point cloud.*X, Y, Z and Reflectivity"):
+        read_livox_csv('{"format_version": 1, "kind": "obstructed_sky"}')

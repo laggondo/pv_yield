@@ -104,12 +104,14 @@ function call(action, ...args) {
   });
 }
 
-// Show an error below the status light, log it and mark the page state.
+// Show an error below the status light, log it and mark the page state. The top shows only the message's last line
+// (for Python errors the exception's message, without the traceback and the exception type); the log has all of it.
 function fail(error) {
   const message = `Error: ${error.message ?? error}`;
   report(message);
   console.error(message);
-  element("error").textContent = `${message}\n(Details: log at the bottom of the page.)`;
+  const summary = message.trim().split("\n").at(-1).trim().replace(/^\w+(Error|Exception|Warning): /, "");
+  element("error").textContent = `Error: ${summary} (details in the log at the bottom of the page)`;
   element("error").hidden = false;
   setState("error");
   updateButtons();
