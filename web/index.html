@@ -147,7 +147,7 @@
         <label>Tilt (°, 0 = horizontal) <input type="number" id="tilt_deg" value="15" min="0" max="90" step="any" placeholder="optimize"></label>
         <label>Azimuth (°, compass: 180 = south) <input type="number" id="azimuth_deg" value="180" min="0" max="360" step="any" placeholder="optimize"></label>
       </div>
-      <div class="summary">Leave tilt or azimuth empty to find the best one.</div>
+      <div class="summary">Leave tilt or azimuth empty to find the best one for the obstructed sky.</div>
       <label>Area (m²) <input type="number" id="area_m2" value="1" min="0" step="any"></label>
       <label>Efficiency <input type="number" id="efficiency" value="0.20" min="0" max="1" step="any"></label>
       <label>Performance ratio <input type="number" id="performance_ratio" value="0.80" min="0" max="1" step="any"></label>
@@ -195,7 +195,7 @@
   <p class="hint">Hourly total radiation on the panel over the year: hour of the day across, day of the year downwards; unobstructed and obstructed side by side (on a phone, one below the other).</p>
   <div id="plot-carpet" class="plot"></div>
   <h2>Panel orientation</h2>
-  <p class="hint">Annual radiation on the panel over azimuth and tilt, unobstructed and obstructed; star: best orientation, circle: the panel's; dotted lines enclose 95 % and 90 % of the best.</p>
+  <p class="hint">Annual radiation on the panel over azimuth and tilt, unobstructed and obstructed; star: each plot's best orientation, circle: the panel's (an optimized panel is the obstructed best, so in the unobstructed plot it differs from the star); dotted lines enclose 95 % and 90 % of the best.</p>
   <div id="plot-orientation" class="plot"></div>
   </div>
 </section>
