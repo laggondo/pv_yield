@@ -75,7 +75,8 @@ function removeDirectory(directory) {
 }
 
 // Project zip (#37) from the page's inputs: photos (JPEG bytes) and the point cloud (File) go into Pyodide's file
-// system, Python writes the zip there (with the results and the PDF report, if computed); returns the zip's bytes.
+// system, Python writes the zip there (with the latest results and the PDF report if `project.include_results`);
+// returns the zip's bytes.
 async function saveProject(project, photos, pointCloud) {
   const directory = "/tmp/project_save";
   pyodide.FS.mkdirTree(directory);
@@ -86,7 +87,7 @@ async function saveProject(project, photos, pointCloud) {
       return { ...photo, path };
     });
     if (pointCloud) project.point_cloud = { path: await writeFileToPython(pointCloud, `${directory}/point_cloud`), filename: pointCloud.name };
-    if (session.has_result()) {
+    if (project.include_results) {
       progress(`Loading ${REPORT_PACKAGES.join(", ")} for the PDF report (first time only)`);
       await pyodide.loadPackage(REPORT_PACKAGES);
     }

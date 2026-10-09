@@ -250,17 +250,14 @@ class BrowserSession:
         last = self.require_result()
         return pdf_report(last["result"], last["config"], last["site"], self.irradiation, last["obstructed_sky"])
 
-    def has_result(self):
-        """Whether there is a result (then a project gets the results and the PDF report)."""
-        return self.last is not None
-
     def save_project(self, project_json, path):
-        """Write a project zip (#37) to `path` in Pyodide's file system: the page's inputs, plus the latest results and their PDF report if computed; returns `path`.
+        """Write a project zip (#37) to `path` in Pyodide's file system: the page's inputs, plus the latest results and their PDF report if `include_results`; returns `path`.
 
         `project_json` holds the config, the weather file ({text, filename, source}), the obstructed sky description
         ({text, filename}), the photos ([{name, taken, view, path}], each JPEG written to `path` by the worker), the
         point cloud ({path, filename}) and an irradiation file loaded from a project ({text}); each may be missing.
-        The PDF report needs matplotlib, which the worker loads first when there is a result.
+        `include_results` is set by the page only if the latest result matches these inputs, so a project is always
+        consistent. The PDF report needs matplotlib, which the worker loads first.
         """
         project = json.loads(project_json)
         contents = {CONFIG_NAME: config_to_yaml(merge_configs(default_config(), project.get("config") or {}))}
@@ -285,8 +282,8 @@ class BrowserSession:
             details["point_cloud"] = {"file": name, "original_filename": point_cloud["filename"]}
         if irradiation := project.get("irradiation"):
             contents[IRRADIATION_NAME] = irradiation["text"]
-        if self.last is not None:
-            last = self.last
+        if project.get("include_results"):
+            last = self.require_result()
             contents[REPORT_NAME] = self.pdf_report()
             for name, text in export_files(last["result"], last["config"], last["site"], self.irradiation, last["obstructed_sky"]).items():
                 contents[f"{RESULTS_DIRECTORY}/{name}"] = text

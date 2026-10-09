@@ -136,7 +136,7 @@ def test_session_project_round_trip(tmp_path, session):
     view = {"azimuth_deg": 180.0, "elevation_deg": 20.0, "roll_deg": 0.0, "fov_deg": 65.0, "width": 400, "height": 300}
     project = {"config": {"site": {"query": "Freiburg"}, "panel": PANEL}, "weather": {"text": WEATHER_PATH.read_text(encoding="utf-8"), "filename": WEATHER_PATH.name, "source": "pvgis_tmy"},
                "obstructed_sky": {"text": SKY_PATH.read_text(encoding="utf-8"), "filename": SKY_PATH.name}, "photos": [{"name": "Photo 1", "taken": "2026-10-09T10:00:00Z", "view": view, "path": str(photo_path)}],
-               "point_cloud": {"path": str(point_cloud_path), "filename": "scan.CSV"}, "irradiation": None}
+               "point_cloud": {"path": str(point_cloud_path), "filename": "scan.CSV"}, "irradiation": None, "include_results": True}
     project_path = session.save_project(json.dumps(project), str(tmp_path / "project.zip"))
     with zipfile.ZipFile(project_path) as archive:
         names = set(archive.namelist())
@@ -264,6 +264,10 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert page.evaluate("document.body.dataset.state") == "ready", page.text_content("#log")
             ### Tabs: the first one (site and weather) is shown at the start.
             assert page.locator("#tab-site").is_visible() and page.locator("#tab-panel").is_hidden() and page.get_attribute("#tabs [data-tab=site]", "aria-selected") == "true"
+            ### The results tab without weather data says what is missing.
+            page.click("#tabs [data-tab=results]")
+            assert "need weather data" in page.text_content("#results-empty") and page.locator("#results").is_hidden()
+            page.click("#tabs [data-tab=site]")
             ### Site search and weather download.
             page.fill("#site-query", "Freiburg")
             page.click("#site-search")
@@ -282,12 +286,11 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.set_input_files("#weather-file", WEATHER_PATH)
             wait_idle()
             assert "no obstruction" in page.text_content("#sky-summary")
-            page.click("#compute")
+            ### Opening the results tab computes; a new input while it is shown computes again.
+            page.click("#tabs [data-tab=results]")
             wait_idle()
             assert page.evaluate("window.pvYieldApp.lastResult.key_figures.shading_loss") == pytest.approx(0.0, abs=1e-12)
             page.set_input_files("#sky-file", SKY_PATH)
-            wait_idle()
-            page.click("#compute")
             wait_idle()
             assert page.evaluate("document.body.dataset.state") == "computed", page.text_content("#log")
             assert page.locator("#tab-results").is_visible() and page.locator("#tab-site").is_hidden() and page.url.endswith("#/results")
@@ -305,9 +308,9 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#menu-button")
             assert b"tilt_deg: 15" in download("#config-save")
             assert page.locator("#menu").is_hidden()
-            ### The log opens from the menu.
-            page.click("#menu-button")
-            page.click("#menu [data-tab=log]")
+            ### The log below the tab, collapsed at first.
+            assert page.locator("#log").is_hidden()
+            page.click("#log-details summary")
             assert page.locator("#log").is_visible() and "Computed" in page.text_content("#log")
             ### Marking obstructions by hand, starting from the sample: on the sky map, on a loaded photo and on a camera photo.
             n_sample_obstructed = sum(json.loads(SKY_PATH.read_text())["obstructed"])
@@ -362,7 +365,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#lidar-compute")
             wait_idle()
             assert f"{sum(json.loads(SKY_PATH.read_text())['obstructed'])} of" in page.text_content("#sky-summary")
-            ### Project (#37): with the photo set loaded again, saved with all inputs and the results, then loaded (after the confirmation) and computed again.
+            ### Project (#37): with the photo set loaded again, saved with all inputs and the results (computed again, as the inputs changed), then loaded and computed again.
             page.click("#sky-edit")
             wait_idle()
             page.set_input_files("#photo-file", photo_set_path)
@@ -374,7 +377,6 @@ def test_browser_page_computes_sample(tmp_path, session):
             project_path.write_bytes(download("#project-save"))
             with zipfile.ZipFile(project_path) as archive:
                 assert {"project.yaml", "config.yaml", "weather.csv", "obstructed_sky.json", "photos.json", "photos/photo_1.jpg", "photos/photo_2.jpg", "point_cloud.csv", "report.pdf", "results/results.json"} <= set(archive.namelist())
-            page.once("dialog", lambda dialog: dialog.accept())
             page.set_input_files("#project-file", project_path)
             wait_idle()
             assert page.evaluate("document.body.dataset.state") == "computed" and page.locator("#tab-results").is_visible(), page.text_content("#log")
@@ -387,7 +389,8 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#editor-close")
             ### The inputs are restored after a reload.
             page.reload()
-            page.wait_for_function("['ready', 'error'].includes(document.body.dataset.state) && !document.getElementById('compute').disabled", timeout=300_000)
+            page.wait_for_function("['ready', 'computed', 'error'].includes(document.body.dataset.state) && !document.getElementById('project-save').disabled", timeout=300_000)
+            assert page.locator("#tab-obstruction").is_visible()                ### the tab is kept in the URL
             assert "Freiburg-pvgis-tmy.csv" in page.text_content("#weather-summary") and "obstructed_sky_2026" in page.text_content("#sky-summary")
             assert page.input_value("#scanner_heading_deg") == "188.1"
             ### "No obstruction" removes the obstructed sky description again.
@@ -395,12 +398,12 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#sky-clear")
             wait_idle()
             assert "no obstruction" in page.text_content("#sky-summary") and page.is_disabled("#sky-save")
-            ### New project (after the confirmation): inputs emptied, the form at its defaults, back on the first tab.
+            ### New project: inputs emptied, the form at its defaults, back on the first tab.
             page.click("#menu-button")
-            page.once("dialog", lambda dialog: dialog.accept())
             page.click("#project-new")
             wait_idle()
-            assert page.text_content("#weather-summary") == "not loaded" and page.input_value("#scanner_heading_deg") == "0" and page.locator("#tab-site").is_visible() and page.is_disabled("#compute")
+            assert page.text_content("#weather-summary") == "not loaded" and page.input_value("#scanner_heading_deg") == "0" and page.locator("#tab-site").is_visible()
+            assert page.evaluate("window.pvYieldApp.lastResult") is None
         finally:
             print("\n".join(messages))
             browser.close()

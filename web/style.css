@@ -17,6 +17,8 @@ h2 { font-size: 1.15rem; margin-top: 1.6em; }
 #tabs button[aria-selected="true"] { border-bottom-color: #d95f02; font-weight: 600; }
 #top-bar .error { max-height: 25vh; overflow: auto; margin: 4px 0 6px; }
 .tab-panel { padding-top: 12px; }
+#log-details { margin-top: 2em; }
+#log-details summary { cursor: pointer; color: #555; font-size: 0.9rem; }
 #status-light { width: 14px; height: 14px; border-radius: 50%; background: #c62828; flex: none; }
 body[data-state="ready"] #status-light, body[data-state="computed"] #status-light { background: #2e7d32; }
 .error { color: #b00020; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 0.85rem; }
