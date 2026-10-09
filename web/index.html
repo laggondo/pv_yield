@@ -75,10 +75,29 @@
 <section id="tab-obstruction" class="tab-panel" hidden>
   <div class="inputs">
     <fieldset>
-      <legend>Obstructed sky description (optional)</legend>
-      <label>JSON file (from the CLI or saved here) <input type="file" id="sky-file"></label>
-      <details id="lidar">
-        <summary>… or compute it from a LiDAR point cloud (computers; large files)</summary>
+      <legend>Obstructed sky</legend>
+      <p class="hint">The sky as seen from the panel: tap patches to mark them as obstructed (red) or free them, as set by the switch. Loading a file, computing from LiDAR or marking on photos (below) changes it; every change is used for the next computation right away.</p>
+      <div class="mode-switch" role="group" aria-label="What tapping does"><button id="mode-mark" class="small selected" data-mark-value="1" aria-pressed="true">■ Mark</button><button id="mode-free" class="small" data-mark-value="0" aria-pressed="false">□ Free</button></div>
+      <canvas id="sky-map-canvas" class="marking-canvas"></canvas>
+      <div class="summary" id="sun-path-legend"></div>
+      <label><input type="checkbox" id="sky-map-photos" checked> Show the photos on the sky map (where photos overlap, the one seeing the spot closer to its centre)</label>
+      <p class="hint" id="sky-map-controls"></p>
+      <label>Sky nodes (resolution) <input type="number" id="n_sky_nodes" value="500" min="5" step="1"></label>
+      <div class="summary">About this many nodes; a loaded or computed description brings its own. Changing it starts again from a free sky.</div>
+      <div class="summary" id="sky-summary">none: no obstruction (free sky)</div>
+      <div class="buttons">
+        <button id="sky-save" class="small" disabled>Save obstructed sky description</button>
+        <button id="sky-clear" class="small" disabled>No obstruction</button>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Sources</legend>
+      <details id="sky-load" name="sky-source">
+        <summary>Load a file (JSON from the CLI or saved here)</summary>
+        <label>Obstructed sky description <input type="file" id="sky-file"></label>
+      </details>
+      <details id="lidar" name="sky-source">
+        <summary>Compute from a LiDAR point cloud (computers; large files)</summary>
         <label>Point cloud (Livox CSV) <input type="file" id="lidar-file"></label>
         <label>Scanner heading (°) <input type="number" id="scanner_heading_deg" value="0" step="any"></label>
         <div class="summary">The compass direction the scanner's front faced during the scan: 0 = north, 90 = east, 180 = south, 270 = west. The front is the scanner's forward axis (its x axis in the point cloud; see the scanner's manual). Measure it with a compass app held along the scanner, or check it afterwards: a building known to be south of the panel must appear in the south of the sky plot.</div>
@@ -88,24 +107,34 @@
           <label>north (m) <input type="number" id="offset-north" value="0" step="any"></label>
           <label>up (m) <input type="number" id="offset-up" value="0" step="any"></label>
         </div>
-        <div class="row">
-          <label>Min. points per obstructed patch <input type="number" id="min_points" value="10" min="1" step="1"></label>
-          <label>Sky nodes (resolution) <input type="number" id="n_sky_nodes" value="500" min="5" step="1"></label>
-        </div>
+        <label>Min. points per obstructed patch <input type="number" id="min_points" value="10" min="1" step="1"></label>
+        <div class="summary">The sky's resolution is set above (sky nodes).</div>
         <button id="lidar-compute" disabled>Compute obstruction</button>
       </details>
-      <details id="photo">
-        <summary>… or mark obstructions on photos or a sky map (phones)</summary>
-        <div class="summary">Take photos of the sky from the panel position with this page (the phone's sensors give the camera orientation) or load photos, then tap the sky patches that are obstructed. A loaded or computed obstructed sky description is the start state, e.g. to correct a LiDAR result.</div>
+      <details id="photo" name="sky-source">
+        <summary>Mark on photos (phones)</summary>
+        <p class="hint">Take photos of the sky from the panel position (the phone's sensors give the camera orientation) or load photos, then tap the obstructed sky patches on a photo; they show up on the sky map above. The patches are drawn as seen from the camera, without any offset; patches outside all photos stay as they are.</p>
         <label>Camera field of view (°, across the photo's longer side) <input type="number" id="camera_fov_deg" value="65" min="10" max="170" step="any"></label>
         <div class="summary">Main cameras of phones see about 60–70° across the longer side; check it on a photo: the compass letters and the horizon should match.</div>
-        <button id="sky-edit" disabled>Mark obstructions</button>
+        <div class="buttons">
+          <button id="camera-start" disabled>Take photos (camera)</button>
+          <label class="button small">Load photo or photo set <input type="file" id="photo-file" hidden></label>
+          <button id="photos-save" class="small">Save photos</button>
+        </div>
+        <div class="buttons" id="photo-list"></div>
+        <div id="photo-view" hidden>
+          <div class="mode-switch" role="group" aria-label="What tapping does"><button id="mode-mark-photo" class="small selected" data-mark-value="1" aria-pressed="true">■ Mark</button><button id="mode-free-photo" class="small" data-mark-value="0" aria-pressed="false">□ Free</button></div>
+          <canvas id="photo-canvas" class="marking-canvas"></canvas>
+          <p class="hint" id="photo-controls"></p>
+          <div class="summary">Camera orientation of this photo, also set by moving the sky grid (see above); the horizon (yellow) and the compass letters should match the photo.</div>
+          <div class="row">
+            <label>Azimuth (°, compass) <input type="number" id="photo-azimuth_deg" step="0.5"></label>
+            <label>Elevation (°) <input type="number" id="photo-elevation_deg" step="0.5" min="-90" max="90"></label>
+            <label>Roll (°) <input type="number" id="photo-roll_deg" step="0.5"></label>
+            <label>Field of view (°) <input type="number" id="photo-fov_deg" step="0.5" min="10" max="170"></label>
+          </div>
+        </div>
       </details>
-      <div class="summary" id="sky-summary">none: no obstruction (free sky)</div>
-      <div class="buttons">
-        <button id="sky-save" class="small" disabled>Save obstructed sky description</button>
-        <button id="sky-clear" class="small" disabled>No obstruction</button>
-      </div>
     </fieldset>
   </div>
 </section>
@@ -126,41 +155,6 @@
     </fieldset>
   </div>
   <p class="hint">The results are computed from the inputs of all tabs when you open the tab Results (Enter in a panel field opens it).</p>
-</section>
-
-<!-- Full-screen layer over the page; "Done" returns to the page where it was. -->
-<section id="editor" class="overlay" hidden>
-  <div class="overlay-bar">
-    <h2>Mark obstructions</h2>
-    <div class="mode-switch" role="group" aria-label="What tapping does"><button id="mode-mark" class="small selected" aria-pressed="true">■ Mark</button><button id="mode-free" class="small" aria-pressed="false">□ Free</button></div>
-    <div class="bar-buttons"><button id="editor-cancel" class="small">Cancel</button><button id="editor-close" class="primary">Done</button></div>
-  </div>
-  <p class="hint">Take the photos from the panel position: the patches are drawn as seen from the camera, without any offset. Every change is used for the next computation right away.
-    Patches outside all photos stay as they are (free, unless the start state marks them).</p>
-  <div class="buttons">
-    <button id="camera-start">Take photos (camera)</button>
-    <label class="button small">Load photo or photo set <input type="file" id="photo-file" hidden></label>
-  </div>
-  <div class="buttons" id="editor-views"></div>
-  <label id="sky-map-photos-label"><input type="checkbox" id="sky-map-photos" checked> Show the photos on the sky map (where photos overlap, the one seeing the spot closer to its centre)</label>
-  <canvas id="editor-canvas"></canvas>
-  <div class="summary" id="sun-path-legend"></div>
-  <p class="hint" id="editor-controls"></p>
-  <div id="photo-settings" hidden>
-    <div class="summary">Camera orientation of this photo, also set by moving the sky grid (see above); the horizon (yellow) and the compass letters should match the photo.</div>
-    <div class="row">
-      <label>Azimuth (°, compass) <input type="number" id="photo-azimuth_deg" step="0.5"></label>
-      <label>Elevation (°) <input type="number" id="photo-elevation_deg" step="0.5" min="-90" max="90"></label>
-      <label>Roll (°) <input type="number" id="photo-roll_deg" step="0.5"></label>
-      <label>Field of view (°) <input type="number" id="photo-fov_deg" step="0.5" min="10" max="170"></label>
-    </div>
-    <button id="photo-remove" class="small">Remove this photo</button>
-  </div>
-  <div class="summary" id="editor-summary"></div>
-  <div class="buttons">
-    <button id="editor-free" class="small">Free all patches</button>
-    <button id="photos-save" class="small">Save photos</button>
-  </div>
 </section>
 
 <!-- Full-screen camera with the sky patches over the live image; stays open for a series of photos until "Done". -->

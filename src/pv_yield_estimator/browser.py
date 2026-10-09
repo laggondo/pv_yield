@@ -123,7 +123,7 @@ class BrowserSession:
             self.irradiation = None
         self.obstructed_sky = obstructed_sky
         metadata = obstructed_sky.metadata
-        return json.dumps({"n_patches": obstructed_sky.sky.n_patches, "n_obstructed": int(np.count_nonzero(obstructed_sky.obstructed)),
+        return json.dumps({"n_nodes": len(obstructed_sky.sky.nodes), "n_sky_nodes": obstructed_sky.sky.node_count_setting(), "n_patches": obstructed_sky.sky.n_patches, "n_obstructed": int(np.count_nonzero(obstructed_sky.obstructed)),
                            "obstructed_solid_angle_fraction": obstructed_sky.obstructed_solid_angle_fraction(), "sky_view_factor_horizontal": obstructed_sky.sky_view_factor(),
                            "method": metadata.get("method", ""), "created": metadata.get("created", ""), "input_file": metadata.get("input_file", "")})
 
