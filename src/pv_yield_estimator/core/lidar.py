@@ -18,7 +18,16 @@ def read_livox_csv(content):
     line holds device information and is skipped; points without return (reflectivity 0) or at the origin are
     dropped. Coordinates are in the scanner frame: x forward, y left, z up.
     """
-    table = pd.read_csv(io.StringIO(content) if isinstance(content, str) else content, header=0, skiprows=[1], usecols=["X", "Y", "Z", "Reflectivity"])
+    source = io.StringIO(content) if isinstance(content, str) else content
+    ### Check the header first: other files (e.g. an obstructed sky description) otherwise fail with a parser error.
+    header = source.readline()
+    source.seek(0)
+    if isinstance(header, bytes):
+        header = header.decode("utf-8", errors="replace")
+    if not {"X", "Y", "Z", "Reflectivity"} <= {name.strip() for name in header.split(",")}:
+        raise ValueError(f"Not a Livox CSV point cloud: the first line must name the columns X, Y, Z and Reflectivity, but it starts with {header[:60].strip()!r}. "
+                         "An obstructed sky description (JSON) is loaded as such, not as a point cloud.")
+    table = pd.read_csv(source, header=0, skiprows=[1], usecols=["X", "Y", "Z", "Reflectivity"])
     points = table[["X", "Y", "Z"]].to_numpy(dtype=float)
     valid = (table["Reflectivity"].to_numpy() > 0) & np.any(points != 0.0, axis=1)
     log.info(f"LiDAR point cloud: {len(points)} points, {np.count_nonzero(valid)} valid")

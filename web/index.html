@@ -98,7 +98,7 @@
       </details>
       <details id="lidar" name="sky-source">
         <summary>Compute from a LiDAR point cloud (computers; large files)</summary>
-        <label>Point cloud (Livox CSV) <input type="file" id="lidar-file"></label>
+        <label>Point cloud (Livox CSV) <input type="file" id="lidar-file" accept=".csv,text/csv"></label>
         <label>Scanner heading (°) <input type="number" id="scanner_heading_deg" value="0" step="any"></label>
         <div class="summary">The compass direction the scanner's front faced during the scan: 0 = north, 90 = east, 180 = south, 270 = west. The front is the scanner's forward axis (its x axis in the point cloud; see the scanner's manual). Measure it with a compass app held along the scanner, or check it afterwards: a building known to be south of the panel must appear in the south of the sky plot.</div>
         <div class="summary">Panel offset: where the panel is, seen from the scanner, in metres towards east, north and up.</div>
