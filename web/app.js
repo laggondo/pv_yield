@@ -57,6 +57,8 @@ function showTab(name) {
   for (const tab of TABS) element(`tab-${tab}`).hidden = tab !== name;
   for (const button of document.querySelectorAll("#tabs [data-tab]")) button.setAttribute("aria-selected", String(button.dataset.tab === name));
   window.scrollTo(0, 0);
+  // Drawn while hidden, the sky map and photo get line widths for the wrong size.
+  if (name === "obstruction") editor.redraw();
   updateResultsIfShown();
 }
 
@@ -118,7 +120,7 @@ function updateButtons() {
   const idle = pythonReady && document.body.dataset.state !== "busy";
   for (const id of ["site-search", "weather-download", "config-save", "project-new", "project-save"]) element(id).disabled = !idle;
   element("lidar-compute").disabled = !idle || !element("lidar-file").files.length;
-  element("sky-edit").disabled = !idle;
+  element("camera-start").disabled = !idle || !editor.isStarted;
   element("weather-save").disabled = !inputs.weather;
   element("sky-save").disabled = !inputs.sky;
   element("sky-clear").disabled = !idle || !inputs.sky;
@@ -316,6 +318,7 @@ async function loadWeather(text, filename, source = "auto") {
   element("weather-summary").textContent = `${filename}: ${summary.name}, ${format(summary.latitude, 3)}° N, ${format(summary.longitude, 3)}° E, ${format(summary.altitude, 0)} m; ${summary.n_hours} hours; annual GHI ${format(summary.annual_ghi_kwh_m2, 0)}, DNI ${format(summary.annual_dni_kwh_m2, 0)}, DHI ${format(summary.annual_dhi_kwh_m2, 0)} kWh/m²`;
   report(`Weather loaded: ${filename} (${summary.source})`);
   await remember("weather", inputs.weather);
+  if (editor.isStarted) await editor.reload();      // sun paths for the weather data's site, if the form has none
 }
 
 function showSkySummary(summary, filename) {
@@ -325,12 +328,15 @@ function showSkySummary(summary, filename) {
 async function loadObstructedSky(text, filename) {
   inputs.sky = null;
   element("sky-summary").textContent = "loading ...";
-  showSkySummary(await call("loadObstructedSky", text, filename), filename);
+  const summary = await call("loadObstructedSky", text, filename);
+  showSkySummary(summary, filename);
+  // The resolution field takes the setting that gives the loaded description's grid (none for other grids).
+  if (summary.n_sky_nodes !== null) element("n_sky_nodes").value = summary.n_sky_nodes;
   inputs.sky = { text, filename };
   inputsVersion++;
   report(`Obstructed sky description loaded: ${filename}`);
   await remember("sky", inputs.sky);
-  if (editor.isOpen) await editor.reload();
+  if (editor.isStarted) await editor.reload();
 }
 
 async function computeObstruction() {
@@ -345,7 +351,7 @@ async function computeObstruction() {
   showSkySummary(summary, filename);
   report(`Obstructed sky computed from ${file.name}`);
   await remember("sky", inputs.sky);
-  if (editor.isOpen) await editor.reload();
+  if (editor.isStarted) await editor.reload();
 }
 
 // The obstructed sky description marked by hand (photos, sky map) replaces the loaded one; kept like a loaded file.
@@ -374,6 +380,7 @@ function setSite(latitude, longitude) {
   element("site-longitude").value = Number(longitude).toFixed(5);
   updatePvgisLink();
   remember("form", formValues());
+  if (editor.isStarted) editor.reload().catch(fail);      // sun paths for the new site
 }
 
 // Point the PVGIS link to the site's typical year, if the site is set; PVGIS sends it as a file download, so no new tab
@@ -479,6 +486,8 @@ async function resetInputs() {
   element("weather-summary").textContent = "not loaded";
   element("sky-summary").textContent = NO_SKY_SUMMARY;
   await editor.setPhotos([]);
+  // The reset session forgot the start state of marking: start again from a free sky.
+  if (editor.isStarted) await editor.reload();
   window.pvYieldApp.lastResult = null;
   Object.assign(results, { computedKey: null, attemptedKey: null, pendingPlots: null });
   showResultsMessage(NO_RESULTS_MESSAGE);
@@ -642,6 +651,7 @@ async function restoreStoredInputs() {
   if (photos?.length) await editor.setPhotos(photos);
   if (form || weather || sky || photos?.length) report(`Restored the inputs of the last visit${photos?.length ? ` (${photos.length} photos)` : ""}`);
   updatePvgisLink();
+  await editor.reload();
 }
 
 // ---- Event handlers ----
@@ -661,7 +671,10 @@ element("site-query").addEventListener("keydown", event => { if (event.key === "
 element("site-results").addEventListener("change", event => setSite(foundPlaces[event.target.value].latitude, foundPlaces[event.target.value].longitude));
 element("site-gps").addEventListener("click", () => whileBusy(locateByGps));
 for (const id of ["site-latitude", "site-longitude", "weather-years"]) element(id).addEventListener("change", () => updatePvgisLink().catch(fail));
-for (const id of ["site-latitude", "site-longitude"]) element(id).addEventListener("change", () => describeSite());
+for (const id of ["site-latitude", "site-longitude"]) element(id).addEventListener("change", () => {
+  describeSite();
+  if (editor.isStarted) editor.reload().catch(fail);      // sun paths for the new site
+});
 element("weather-download").addEventListener("click", () => whileBusy(downloadWeather));
 element("weather-file").addEventListener("change", async event => {
   const file = event.target.files[0];
@@ -687,21 +700,20 @@ async function clearObstructedSky() {
   element("sky-file").value = "";
   report("Obstructed sky description removed: computing without obstruction");
   await remember("sky", null);
-  if (editor.isOpen) await editor.reload();
+  if (editor.isStarted) await editor.reload();
 }
 
 element("sky-clear").addEventListener("click", () => whileBusy(clearObstructedSky));
-// The obstructed sky description when marking started, restored on cancel (marking replaces it with every change).
-let skyBeforeMarking = null;
-element("sky-edit").addEventListener("click", () => whileBusy(async () => {
-  skyBeforeMarking = inputs.sky;
-  await editor.open();
-}));
-element("editor-cancel").addEventListener("click", () => whileBusy(async () => {
-  editor.cancel();
-  if (skyBeforeMarking) await loadObstructedSky(skyBeforeMarking.text, skyBeforeMarking.filename);
-  else await clearObstructedSky();
-  report("Marking cancelled: the obstructed sky description and the photos are as before");
+// A new resolution starts again from a free sky; with an obstructed sky description, only after a confirmation.
+element("n_sky_nodes").addEventListener("focus", event => { event.target.dataset.previous = event.target.value; });
+element("n_sky_nodes").addEventListener("change", event => whileBusy(async () => {
+  if (inputs.sky && !confirm(`A new resolution replaces the obstructed sky description (${inputs.sky.filename}) by a free sky. Continue?`)) {
+    event.target.value = event.target.dataset.previous ?? event.target.value;
+    await remember("form", formValues());
+    return;
+  }
+  if (inputs.sky) await clearObstructedSky();
+  else await editor.reload();
 }));
 // The camera starts right in the tap's handler: iOS grants the motion sensors only then.
 element("camera-start").addEventListener("click", () => whileBusy(editor.startCamera));
@@ -716,8 +728,6 @@ element("photos-save").addEventListener("click", () => {
   if (editor.hasPhotos) saveFile("pv_yield_photos.json", editor.photoSetText(), "application/json");
   else report("No photos to save");
 });
-element("editor-free").addEventListener("click", () => whileBusy(editor.freeAll));
-element("editor-close").addEventListener("click", () => editor.close());
 for (const id of ENTER_SHOWS_RESULTS) {
   element(id).addEventListener("keydown", event => { if (event.key === "Enter") openTab("results"); });
 }

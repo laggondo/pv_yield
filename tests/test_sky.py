@@ -96,3 +96,12 @@ def test_obstructed_sky_rejects_wrong_files(sky):
         ObstructedSky.from_dict({key: value for key, value in data.items() if key != "format_version"})
     with pytest.raises(ValueError, match="one entry per patch"):
         ObstructedSky(sky, [True, False])
+
+
+@pytest.mark.parametrize("n_sky_nodes", [5, 37, 500, 2000])
+def test_node_count_setting_reproduces_the_discretization(n_sky_nodes):
+    """The browser's resolution field takes this setting from a loaded description; it must give the same nodes again, and None for other discretizations."""
+    sky = SkyDiscretization.from_node_count(n_sky_nodes)
+    assert SkyDiscretization.from_node_count(sky.node_count_setting()).same_as(sky)
+    rotated_nodes = sky.nodes @ np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    assert SkyDiscretization(rotated_nodes, sky.triangles).node_count_setting() is None

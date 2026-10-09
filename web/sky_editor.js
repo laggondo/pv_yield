@@ -1,14 +1,17 @@
-// Marking obstructed sky patches by hand (photo method, #17): on photos taken with the phone's camera (camera
-// orientation from the phone's sensors) or loaded from files, and on a map of the sky hemisphere. The sky patches are
-// drawn over the view; tapping or dragging marks the patches as obstructed or frees them, as set by the mode switch.
-// On photos, the sky grid can be moved to match the photo, and the sky map can be zoomed (right mouse button or two
-// fingers; see CONTROLS_TEXT). The sky map shows
-// the photos merged onto the hemisphere, and the live camera view shows which patches earlier photos cover. All views
-// show the sun paths of the solstices and equinoxes, so photos can focus on the relevant part of the sky. Loaded
-// obstructed sky descriptions (e.g. from LiDAR) are the start state, and the edits are baked into the flags (#12).
+// Marking obstructed sky patches by hand (photo method, #17), on the obstruction tab: the sky map (a map of the sky
+// hemisphere, always shown at the top of the tab) and photos taken with the phone's camera (camera orientation from the
+// phone's sensors) or loaded from files, one of them shown at a time below the list of photos. The sky patches are
+// drawn over both; tapping or dragging marks the patches as obstructed or frees them, as set by the mode switch (one
+// setting, shown above both). On photos, the sky grid can be moved to match the photo, and the sky map can be zoomed
+// (right mouse button or two fingers; see CONTROLS_TEXT). The sky map shows the photos merged onto the hemisphere, and
+// the live camera view shows which patches the photos cover. All views show the sun paths of the solstices and
+// equinoxes, so photos can focus on the relevant part of the sky. The current obstructed sky description (loaded,
+// computed from LiDAR, or free) is the start state, and the edits are baked into the flags (#12).
 // The camera geometry (sensor angles to camera orientation, projection of the sky nodes to pixels) is computed in
 // Python (core/photo.py); this module only draws and handles input. Photos are assumed to be taken from the panel
 // position: no offset is applied (#11).
+
+import { HeadingFusion } from "./heading.js";
 
 const PHOTO_SET_FORMAT_VERSION = 1;
 const MAX_PHOTO_PX = 1600;           // longer side of stored photos, to keep memory and saved files small
@@ -21,36 +24,32 @@ const COMPASS = [["N", 0], ["E", 90], ["S", 180], ["W", 270]];
 const DEFAULT_PHOTO_VIEW = { azimuth_deg: 180, elevation_deg: 15, roll_deg: 0 };   // loaded photos and photos without sensors
 const SHUTTER_KEYS = ["AudioVolumeUp", "AudioVolumeDown", "VolumeUp", "VolumeDown", "Camera", "Enter", " "];
 const CONTROLS_TEXT = {
-  sky_map: "Tap or click sky patches to mark them as obstructed (red) or free them, as set by the switch at the top; drag for several. "
-    + "Zoom with the mouse wheel or by pinching; move the zoomed map by dragging with the right mouse button or two fingers.",
-  photo: "Tap or click sky patches to mark them as obstructed (red) or free them, as set by the switch at the top; drag for several. "
+  sky_map: "Drag to mark several patches. Zoom with the mouse wheel or by pinching; move the zoomed map by dragging with the right mouse button or two fingers.",
+  photo: "Tap or click sky patches to mark them as obstructed (red) or free them, as set by the switch; drag for several. "
     + "Align the sky grid with the photo: drag with the right mouse button (Shift: rotate) and use the mouse wheel for the field of view; "
     + "on touch screens, drag with two fingers, twist to rotate and pinch for the field of view.",
 };
 const MAX_SKY_MAP_ZOOM = 10;
+const SKY_MAP_REDRAW_DELAY_MS = 250;  // the merged photos are recomputed this long after the last change of a photo's view
 
 // Create the editor on the page's elements; `call` runs a worker action, `report` logs, `onApplied(summary)` is called
 // after the marked flags were sent to Python as the new obstructed sky description, `onPhotosChanged()` a moment after
-// photos were added, removed or aligned (to store them for the next visit).
+// photos were added, removed or aligned (to store them for the next visit). Marking starts with `reload()`.
 export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyNodes, site, onApplied, onPhotosChanged }) {
-  const canvas = element("editor-canvas");
-  const context = canvas.getContext("2d");
-  let sky = null;                      // {nodes, triangles}
+  let sky = null;                      // {nodes, triangles}; null until the first reload
   let flags = null;                    // Uint8Array, one entry per patch
   let skyMapPixels = null;             // node positions in the sky map
   let sunPaths = [];                   // [{label, color, directions}] for the site; empty if the site is unknown
-  const views = [{ kind: "sky_map", name: "Sky map" }];
-  let current = 0;
+  const skyMapView = { kind: "sky_map", name: "Sky map" };
+  const photos = [];                   // [{kind: "photo", name, taken, image, view, projection}]
+  let selected = null;                 // the photo shown for marking, or null
   const methodsUsed = new Set();
-  let stroke = null;                   // {value, changed, before} while marking
-  let alignment = null;                // {pointers, ...} while moving the sky grid over a photo
-  const pointers = new Map();          // active pointers (touch: several fingers) by id: {x, y} in canvas pixels
   let skyMapPhotos = null;             // canvas with the photos merged onto the sky map; null: to be recomputed
   const skyMapZoom = { factor: 1, x: 0, y: 0 };   // sky map shown at factor × size, shifted by (x, y) canvas pixels
   let markValue = 1;                   // what tapping sets: 1 marks as obstructed, 0 frees
-  let viewsWhenOpened = [];            // to restore the photos on cancel
   let photosChangedTimer = null;
-  const camera = { stream: null, orientation: null, listener: null, eventName: null, projection: null, running: false, requestInFlight: false };
+  let skyMapRedrawTimer = null;
+  const camera = { stream: null, fusion: new HeadingFusion(), compassHeading: null, listeners: [], projection: null, running: false, requestInFlight: false, photosTaken: 0, shooting: false };
 
   // ---- Geometry ----
 
@@ -88,9 +87,9 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   // Flag per patch: 1 if a photo shows it completely (all corners in front of the camera and inside the image).
   function coveredPatches() {
     const covered = new Uint8Array(sky.triangles.length);
-    for (const view of views) {
-      if (view.kind !== "photo" || !view.projection) continue;
-      const { pixels, in_front } = view.projection, { width, height } = view.view;
+    for (const photo of photos) {
+      if (!photo.projection) continue;
+      const { pixels, in_front } = photo.projection, { width, height } = photo.view;
       const inside = node => in_front[node] && pixels[node][0] >= 0 && pixels[node][0] <= width && pixels[node][1] >= 0 && pixels[node][1] <= height;
       sky.triangles.forEach((triangle, index) => { if (triangle.every(inside)) covered[index] = 1; });
     }
@@ -116,9 +115,9 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   // outside all photos keep the background colour. The camera axes come from Python (projectSky).
   function mergedSkyMapCanvas() {
     const image = new ImageData(SKY_MAP_PX, SKY_MAP_PX);
-    const photos = views.filter(view => view.kind === "photo" && view.projection).map(view => {
-      view.pixelData ??= view.image.getContext("2d").getImageData(0, 0, view.image.width, view.image.height).data;
-      return { ...view.projection.camera, width: view.image.width, height: view.image.height, data: view.pixelData };
+    const sources = photos.filter(photo => photo.projection).map(photo => {
+      photo.pixelData ??= photo.image.getContext("2d").getImageData(0, 0, photo.image.width, photo.image.height).data;
+      return { ...photo.projection.camera, width: photo.image.width, height: photo.image.height, data: photo.pixelData };
     });
     const centre = SKY_MAP_PX / 2;
     for (let y = 0; y < SKY_MAP_PX; y++) {
@@ -130,7 +129,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
         const zenith = radius / SKY_MAP_RADIUS * Math.PI / 2, azimuth = Math.atan2(x - centre, centre - y);
         const direction = [Math.sin(zenith) * Math.sin(azimuth), Math.sin(zenith) * Math.cos(azimuth), Math.cos(zenith)];
         let best = null, bestScore = 0;
-        for (const photo of photos) {
+        for (const photo of sources) {
           const depth = direction[0] * photo.forward[0] + direction[1] * photo.forward[1] + direction[2] * photo.forward[2];
           if (depth <= 0) continue;
           const u = photo.width / 2 + photo.focal_length_px * (direction[0] * photo.right[0] + direction[1] * photo.right[1] + direction[2] * photo.right[2]) / depth;
@@ -230,61 +229,76 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     }
   }
 
-  function draw() {
+  function drawSkyMap() {
     if (!sky) return;
-    const view = views[current];
-    if (view.kind === "sky_map") {
-      canvas.width = canvas.height = SKY_MAP_PX;
-      context.fillStyle = `rgb(${SKY_MAP_BACKGROUND.join(", ")})`;
-      context.fillRect(0, 0, SKY_MAP_PX, SKY_MAP_PX);
-      context.setTransform(skyMapZoom.factor, 0, 0, skyMapZoom.factor, skyMapZoom.x, skyMapZoom.y);
-      if (element("sky-map-photos").checked && views.some(other => other.projection)) {
-        skyMapPhotos ??= mergedSkyMapCanvas();
-        context.drawImage(skyMapPhotos, 0, 0);
-      }
-      const markers = COMPASS.map(([label, azimuth]) => {
-        const radius = SKY_MAP_RADIUS + 20;
-        return { label, x: SKY_MAP_PX / 2 + radius * Math.sin(azimuth * Math.PI / 180), y: SKY_MAP_PX / 2 - radius * Math.cos(azimuth * Math.PI / 180) };
-      });
-      const skyMapSunPaths = sunPaths.map(({ color, directions }) => ({ color, pieces: [directions.map(skyMapPosition)] }));
-      drawPatches(context, patchCorners(view), displayScale(canvas) / skyMapZoom.factor, { markers, sunPaths: skyMapSunPaths });
-      context.setTransform(1, 0, 0, 1, 0, 0);
-    } else {
-      canvas.width = view.image.width;
-      canvas.height = view.image.height;
-      context.drawImage(view.image, 0, 0);
-      drawPatches(context, patchCorners(view), displayScale(canvas), { markers: view.projection?.markers, horizon: view.projection?.horizon, sunPaths: view.projection?.sun_paths });
+    const canvas = element("sky-map-canvas"), context = canvas.getContext("2d");
+    canvas.width = canvas.height = SKY_MAP_PX;
+    context.fillStyle = `rgb(${SKY_MAP_BACKGROUND.join(", ")})`;
+    context.fillRect(0, 0, SKY_MAP_PX, SKY_MAP_PX);
+    context.setTransform(skyMapZoom.factor, 0, 0, skyMapZoom.factor, skyMapZoom.x, skyMapZoom.y);
+    if (element("sky-map-photos").checked && photos.some(photo => photo.projection)) {
+      skyMapPhotos ??= mergedSkyMapCanvas();
+      context.drawImage(skyMapPhotos, 0, 0);
     }
-    const count = flags.reduce((sum, flag) => sum + flag, 0);
-    element("editor-summary").textContent = `${count} of ${flags.length} sky patches marked as obstructed`;
+    const markers = COMPASS.map(([label, azimuth]) => {
+      const radius = SKY_MAP_RADIUS + 20;
+      return { label, x: SKY_MAP_PX / 2 + radius * Math.sin(azimuth * Math.PI / 180), y: SKY_MAP_PX / 2 - radius * Math.cos(azimuth * Math.PI / 180) };
+    });
+    const skyMapSunPaths = sunPaths.map(({ color, directions }) => ({ color, pieces: [directions.map(skyMapPosition)] }));
+    drawPatches(context, patchCorners(skyMapView), displayScale(canvas) / skyMapZoom.factor, { markers, sunPaths: skyMapSunPaths });
+    context.setTransform(1, 0, 0, 1, 0, 0);
   }
 
-  // ---- View list and photo settings ----
+  function drawPhoto() {
+    if (!sky || !selected) return;
+    const canvas = element("photo-canvas"), context = canvas.getContext("2d");
+    canvas.width = selected.image.width;
+    canvas.height = selected.image.height;
+    context.drawImage(selected.image, 0, 0);
+    drawPatches(context, patchCorners(selected), displayScale(canvas), { markers: selected.projection?.markers, horizon: selected.projection?.horizon, sunPaths: selected.projection?.sun_paths });
+  }
 
-  function showViews() {
-    element("editor-views").innerHTML = "";
-    views.forEach((view, index) => {
-      const button = Object.assign(document.createElement("button"), { textContent: view.name, className: index === current ? "small selected" : "small" });
-      button.addEventListener("click", () => select(index));
-      element("editor-views").appendChild(button);
-    });
-    const view = views[current];
-    element("photo-settings").hidden = view.kind !== "photo";
-    element("sky-map-photos-label").hidden = view.kind !== "sky_map";
-    element("editor-controls").textContent = CONTROLS_TEXT[view.kind];
+  function draw() {
+    drawSkyMap();
+    drawPhoto();
+  }
+
+  // Redraw the sky map a moment after the last change of a photo's view: merging the photos takes a while.
+  function scheduleSkyMapRedraw() {
+    clearTimeout(skyMapRedrawTimer);
+    skyMapRedrawTimer = setTimeout(drawSkyMap, SKY_MAP_REDRAW_DELAY_MS);
+  }
+
+  // ---- Photo list and photo settings ----
+
+  // The photos as buttons, each with a trash button to remove it; the selected one is shown below the list.
+  function showPhotoList() {
+    const list = element("photo-list");
+    list.innerHTML = "";
+    for (const photo of photos) {
+      const item = Object.assign(document.createElement("span"), { className: "photo-item" });
+      const button = Object.assign(document.createElement("button"), { textContent: photo.name, className: photo === selected ? "small selected" : "small" });
+      button.addEventListener("click", () => select(photo === selected ? null : photo));
+      const remove = Object.assign(document.createElement("button"), { textContent: "🗑", className: "small remove", title: `Remove ${photo.name}` });
+      remove.setAttribute("aria-label", `Remove ${photo.name}`);
+      remove.addEventListener("click", () => removePhoto(photo));
+      item.append(button, remove);
+      list.appendChild(item);
+    }
+    element("photo-view").hidden = !selected;
     showPhotoSettings();
   }
 
   function showPhotoSettings() {
-    const view = views[current];
-    if (view.kind !== "photo") return;
-    for (const key of ["azimuth_deg", "elevation_deg", "roll_deg", "fov_deg"]) element(`photo-${key}`).value = Math.round(view.view[key] * 10) / 10;
+    if (!selected) return;
+    for (const key of ["azimuth_deg", "elevation_deg", "roll_deg", "fov_deg"]) element(`photo-${key}`).value = Math.round(selected.view[key] * 10) / 10;
   }
 
-  function select(index) {
-    current = index;
-    showViews();
-    draw();
+  // Show a photo for marking (null: none).
+  function select(photo) {
+    selected = photo;
+    showPhotoList();
+    drawPhoto();
   }
 
   // Report changed photos once they stop changing for a second (aligning changes them continuously).
@@ -294,35 +308,36 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   }
 
   // Project the sky nodes into a photo (Python); repeated requests while one runs are merged into one. Called for every
-  // new or changed camera view, so it also reports changed photos.
-  async function project(view) {
+  // new or changed camera view, so it also reports changed photos. Before marking started, photos are projected by `reload`.
+  async function project(photo) {
     photosChanged();
-    view.projectionWanted = true;
-    if (view.projecting) return;
-    view.projecting = true;
+    if (!sky) return;
+    photo.projectionWanted = true;
+    if (photo.projecting) return;
+    photo.projecting = true;
     try {
-      while (view.projectionWanted) {
-        view.projectionWanted = false;
-        view.projection = await call("projectSky", view.view);
+      while (photo.projectionWanted) {
+        photo.projectionWanted = false;
+        photo.projection = await call("projectSky", photo.view);
         skyMapPhotos = null;
       }
     } finally {
-      view.projecting = false;
+      photo.projecting = false;
     }
-    if (views[current] === view) draw();
+    if (photo === selected) drawPhoto();
+    scheduleSkyMapRedraw();
   }
 
   function photoSettingChanged() {
-    const view = views[current];
-    if (view.kind !== "photo") return;
+    if (!selected) return;
     for (const key of ["azimuth_deg", "elevation_deg", "roll_deg", "fov_deg"]) {
       const value = Number(element(`photo-${key}`).value);
-      if (element(`photo-${key}`).value.trim() !== "" && !Number.isNaN(value)) view.view[key] = value;
+      if (element(`photo-${key}`).value.trim() !== "" && !Number.isNaN(value)) selected.view[key] = value;
     }
-    project(view).catch(fail);
+    project(selected).catch(fail);
   }
 
-  // A photo view: the image as canvas (at most MAX_PHOTO_PX) with its camera view; projected when shown.
+  // A photo: the image as canvas (at most MAX_PHOTO_PX) with its camera view; projected when marking starts.
   function makePhoto(image, view, name, taken) {
     const scale = Math.min(1, MAX_PHOTO_PX / Math.max(image.width, image.height));
     const photoCanvas = document.createElement("canvas");
@@ -332,51 +347,30 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     return { kind: "photo", name, taken, image: photoCanvas, view: { ...view, width: photoCanvas.width, height: photoCanvas.height } };
   }
 
-  // Add a photo with its camera view; selected for marking.
-  async function addPhoto(image, view, name, taken) {
+  // Add a photo with its camera view; shown for marking unless `selectPhoto` is false (photos taken in a series).
+  async function addPhoto(image, view, name, taken, selectPhoto = true) {
     const photo = makePhoto(image, view, name, taken);
-    views.push(photo);
-    select(views.length - 1);
+    photos.push(photo);
+    if (selectPhoto) select(photo);
+    else showPhotoList();
     await project(photo);
     report(`Photo ${name}: azimuth ${photo.view.azimuth_deg.toFixed(1)}°, elevation ${photo.view.elevation_deg.toFixed(1)}°, roll ${photo.view.roll_deg.toFixed(1)}°, field of view ${photo.view.fov_deg}°`);
   }
 
-  function removePhoto() {
-    if (views[current].kind !== "photo") return;
-    views.splice(current, 1);
+  function removePhoto(photo) {
+    photos.splice(photos.indexOf(photo), 1);
+    if (selected === photo) selected = null;
     skyMapPhotos = null;
-    select(Math.min(current, views.length - 1));
+    showPhotoList();
+    drawSkyMap();
     photosChanged();
-  }
-
-  // ---- Marking ----
-
-  function canvasPoint(event) {
-    const rect = canvas.getBoundingClientRect();
-    return [(event.clientX - rect.left) * canvas.width / rect.width, (event.clientY - rect.top) * canvas.height / rect.height];
-  }
-
-  // The point in the view's own coordinates: canvas pixels, undoing the sky map's zoom.
-  function viewPoint(event) {
-    const [x, y] = canvasPoint(event);
-    if (views[current].kind !== "sky_map") return [x, y];
-    return [(x - skyMapZoom.x) / skyMapZoom.factor, (y - skyMapZoom.y) / skyMapZoom.factor];
-  }
-
-  function markAt(event) {
-    const index = patchAt(views[current], viewPoint(event));
-    if (index < 0) return;
-    if (flags[index] !== markValue) {
-      flags[index] = markValue;
-      stroke.changed = true;
-      draw();
-    }
+    report(`Removed ${photo.name}`);
   }
 
   // Send the flags to Python as the new obstructed sky description, with the contributing methods and the photos' views.
   async function apply() {
-    const photos = views.filter(view => view.kind === "photo").map(view => ({ name: view.name, taken: view.taken, ...view.view }));
-    const summary = await call("applyEdits", Array.from(flags), [...methodsUsed], { photos });
+    const details = photos.map(photo => ({ name: photo.name, taken: photo.taken, ...photo.view }));
+    const summary = await call("applyEdits", Array.from(flags), [...methodsUsed], { photos: details });
     await onApplied(summary);
   }
 
@@ -384,156 +378,230 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
 
   // Change the photo's camera view by a movement of the grid on screen (canvas pixels): the grid follows the pointer,
   // so the camera turns the other way. The movement is split along the level camera axes, which the roll turns.
-  function moveGrid(view, dx, dy) {
-    const focalLength = Math.max(view.view.width, view.view.height) / 2 / Math.tan(view.view.fov_deg * Math.PI / 360);
-    const roll = view.view.roll_deg * Math.PI / 180;
+  function moveGrid(photo, dx, dy) {
+    const focalLength = Math.max(photo.view.width, photo.view.height) / 2 / Math.tan(photo.view.fov_deg * Math.PI / 360);
+    const roll = photo.view.roll_deg * Math.PI / 180;
     const along = dx * Math.cos(roll) + dy * Math.sin(roll);
     const upwards = dx * Math.sin(roll) - dy * Math.cos(roll);
-    const elevation = view.view.elevation_deg * Math.PI / 180;
-    view.view.azimuth_deg = ((view.view.azimuth_deg - along / focalLength * 180 / Math.PI / Math.max(Math.cos(elevation), 0.3)) % 360 + 360) % 360;
-    view.view.elevation_deg = Math.max(-90, Math.min(90, view.view.elevation_deg - upwards / focalLength * 180 / Math.PI));
+    const elevation = photo.view.elevation_deg * Math.PI / 180;
+    photo.view.azimuth_deg = ((photo.view.azimuth_deg - along / focalLength * 180 / Math.PI / Math.max(Math.cos(elevation), 0.3)) % 360 + 360) % 360;
+    photo.view.elevation_deg = Math.max(-90, Math.min(90, photo.view.elevation_deg - upwards / focalLength * 180 / Math.PI));
   }
 
   // Zoom the grid by a factor (> 1: larger, i.e. a smaller field of view).
-  function zoomGrid(view, factor) {
-    const fov = 2 * Math.atan(Math.tan(view.view.fov_deg * Math.PI / 360) / factor) * 180 / Math.PI;
-    view.view.fov_deg = Math.max(10, Math.min(170, fov));
+  function zoomGrid(photo, factor) {
+    const fov = 2 * Math.atan(Math.tan(photo.view.fov_deg * Math.PI / 360) / factor) * 180 / Math.PI;
+    photo.view.fov_deg = Math.max(10, Math.min(170, fov));
   }
 
-  function gridChanged(view) {
+  function gridChanged(photo) {
     showPhotoSettings();
-    project(view).catch(fail);
+    project(photo).catch(fail);
   }
 
-  // Centre, spread and angle of the active touch points (two fingers), to move, zoom and rotate the grid.
-  function touchGesture() {
-    const [first, second] = [...pointers.values()];
-    return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2, distance: Math.hypot(second.x - first.x, second.y - first.y), angle: Math.atan2(second.y - first.y, second.x - first.x) };
-  }
+  // ---- Pointer input on a canvas: marking (left button, one finger); aligning a photo or zooming the sky map (right button, two fingers) ----
 
-  function startAlignment(event) {
-    alignment = event.pointerType === "touch" ? { touch: true, last: touchGesture() } : { touch: false, last: canvasPoint(event), rotate: event.shiftKey };
-  }
+  // `currentView()` gives the view shown on the canvas: the sky map or the selected photo.
+  function attachPointerInput(canvas, currentView) {
+    const pointers = new Map();          // active pointers (touch: several fingers) by id: {x, y} in canvas pixels
+    let stroke = null;                   // {changed, before} while marking
+    let alignment = null;                // {touch, last, rotate} while aligning a photo or moving the sky map
 
-  function align(event) {
-    const view = views[current];
-    if (view.kind === "sky_map") return moveSkyMap(event);
-    if (alignment.touch) {
-      if (pointers.size < 2) return;
-      const gesture = touchGesture(), last = alignment.last;
-      moveGrid(view, gesture.x - last.x, gesture.y - last.y);
-      if (last.distance > 0) zoomGrid(view, gesture.distance / last.distance);
-      view.view.roll_deg += (gesture.angle - last.angle) * 180 / Math.PI;
-      alignment.last = gesture;
-    } else {
-      const [x, y] = canvasPoint(event), [lastX, lastY] = alignment.last;
-      if (alignment.rotate) view.view.roll_deg += (x - lastX) * 0.2 / displayScale(canvas);
-      else moveGrid(view, x - lastX, y - lastY);
-      alignment.last = [x, y];
+    function canvasPoint(event) {
+      const rect = canvas.getBoundingClientRect();
+      return [(event.clientX - rect.left) * canvas.width / rect.width, (event.clientY - rect.top) * canvas.height / rect.height];
     }
-    gridChanged(view);
-  }
 
-  // Zoom and move the sky map with two fingers, or move it with the right mouse button.
-  function moveSkyMap(event) {
-    if (alignment.touch) {
-      if (pointers.size < 2) return;
-      const gesture = touchGesture(), last = alignment.last;
-      panSkyMap(gesture.x - last.x, gesture.y - last.y);
-      if (last.distance > 0) zoomSkyMap(gesture.distance / last.distance, [gesture.x, gesture.y]);
-      alignment.last = gesture;
-    } else {
-      const [x, y] = canvasPoint(event), [lastX, lastY] = alignment.last;
-      panSkyMap(x - lastX, y - lastY);
-      alignment.last = [x, y];
+    // The point in the view's own coordinates: canvas pixels, undoing the sky map's zoom.
+    function viewPoint(event) {
+      const [x, y] = canvasPoint(event);
+      if (currentView().kind !== "sky_map") return [x, y];
+      return [(x - skyMapZoom.x) / skyMapZoom.factor, (y - skyMapZoom.y) / skyMapZoom.factor];
     }
-    draw();
-  }
 
-  // ---- Pointer input: marking (left button, one finger); aligning a photo or zooming the sky map (right button, two fingers) ----
+    function markAt(event) {
+      const index = patchAt(currentView(), viewPoint(event));
+      if (index < 0) return;
+      if (flags[index] !== markValue) {
+        flags[index] = markValue;
+        stroke.changed = true;
+        draw();
+      }
+    }
 
-  canvas.addEventListener("contextmenu", event => event.preventDefault());
-  canvas.addEventListener("pointerdown", event => {
-    if (!sky) return;
-    canvas.setPointerCapture(event.pointerId);
-    const [x, y] = canvasPoint(event);
-    pointers.set(event.pointerId, { x, y });
-    if (event.pointerType === "touch" && pointers.size === 2) {
-      // A second finger: undo what the first one marked and align or zoom instead.
-      if (stroke) flags.set(stroke.before);
-      stroke = null;
-      startAlignment(event);
-      draw();
-    } else if (event.button === 2) {
-      startAlignment(event);
-    } else if (event.button === 0 && pointers.size === 1) {
-      stroke = { changed: false, before: flags.slice() };
-      markAt(event);
+    // Centre, spread and angle of the active touch points (two fingers), to move, zoom and rotate the grid.
+    function touchGesture() {
+      const [first, second] = [...pointers.values()];
+      return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2, distance: Math.hypot(second.x - first.x, second.y - first.y), angle: Math.atan2(second.y - first.y, second.x - first.x) };
     }
-  });
-  canvas.addEventListener("pointermove", event => {
-    if (!pointers.has(event.pointerId)) return;
-    const [x, y] = canvasPoint(event);
-    pointers.set(event.pointerId, { x, y });
-    if (alignment) align(event);
-    else if (stroke) markAt(event);
-  });
-  const endPointer = event => {
-    pointers.delete(event.pointerId);
-    if (alignment) {
-      if (!alignment.touch || pointers.size === 0) alignment = null;
-      return;
+
+    function startAlignment(event) {
+      alignment = event.pointerType === "touch" ? { touch: true, last: touchGesture() } : { touch: false, last: canvasPoint(event), rotate: event.shiftKey };
     }
-    if (!stroke) return;
-    const changed = stroke.changed;
-    stroke = null;
-    if (!changed) return;
-    methodsUsed.add(views[current].kind);
-    apply().catch(fail);
-  };
-  canvas.addEventListener("pointerup", endPointer);
-  canvas.addEventListener("pointercancel", endPointer);
-  canvas.addEventListener("wheel", event => {
-    const view = views[current];
-    event.preventDefault();
-    if (view.kind === "sky_map") {
-      zoomSkyMap(Math.exp(-event.deltaY * 0.001), canvasPoint(event));
-      draw();
-    } else {
-      zoomGrid(view, Math.exp(-event.deltaY * 0.001));
+
+    function align(event) {
+      const view = currentView();
+      if (view.kind === "sky_map") return moveSkyMap(event);
+      if (alignment.touch) {
+        if (pointers.size < 2) return;
+        const gesture = touchGesture(), last = alignment.last;
+        moveGrid(view, gesture.x - last.x, gesture.y - last.y);
+        if (last.distance > 0) zoomGrid(view, gesture.distance / last.distance);
+        view.view.roll_deg += (gesture.angle - last.angle) * 180 / Math.PI;
+        alignment.last = gesture;
+      } else {
+        const [x, y] = canvasPoint(event), [lastX, lastY] = alignment.last;
+        if (alignment.rotate) view.view.roll_deg += (x - lastX) * 0.2 / displayScale(canvas);
+        else moveGrid(view, x - lastX, y - lastY);
+        alignment.last = [x, y];
+      }
       gridChanged(view);
     }
-  }, { passive: false });
 
-  // ---- Mode switch: mark or free ----
+    // Zoom and move the sky map with two fingers, or move it with the right mouse button.
+    function moveSkyMap(event) {
+      if (alignment.touch) {
+        if (pointers.size < 2) return;
+        const gesture = touchGesture(), last = alignment.last;
+        panSkyMap(gesture.x - last.x, gesture.y - last.y);
+        if (last.distance > 0) zoomSkyMap(gesture.distance / last.distance, [gesture.x, gesture.y]);
+        alignment.last = gesture;
+      } else {
+        const [x, y] = canvasPoint(event), [lastX, lastY] = alignment.last;
+        panSkyMap(x - lastX, y - lastY);
+        alignment.last = [x, y];
+      }
+      drawSkyMap();
+    }
+
+    canvas.addEventListener("contextmenu", event => event.preventDefault());
+    canvas.addEventListener("pointerdown", event => {
+      if (!sky) return;
+      canvas.setPointerCapture(event.pointerId);
+      const [x, y] = canvasPoint(event);
+      pointers.set(event.pointerId, { x, y });
+      if (event.pointerType === "touch" && pointers.size === 2) {
+        // A second finger: undo what the first one marked and align or zoom instead.
+        if (stroke) flags.set(stroke.before);
+        stroke = null;
+        startAlignment(event);
+        draw();
+      } else if (event.button === 2) {
+        startAlignment(event);
+      } else if (event.button === 0 && pointers.size === 1) {
+        stroke = { changed: false, before: flags.slice() };
+        markAt(event);
+      }
+    });
+    canvas.addEventListener("pointermove", event => {
+      if (!pointers.has(event.pointerId)) return;
+      const [x, y] = canvasPoint(event);
+      pointers.set(event.pointerId, { x, y });
+      if (alignment) align(event);
+      else if (stroke) markAt(event);
+    });
+    const endPointer = event => {
+      pointers.delete(event.pointerId);
+      if (alignment) {
+        if (!alignment.touch || pointers.size === 0) alignment = null;
+        return;
+      }
+      if (!stroke) return;
+      const changed = stroke.changed;
+      stroke = null;
+      if (!changed) return;
+      methodsUsed.add(currentView().kind);
+      apply().catch(fail);
+    };
+    canvas.addEventListener("pointerup", endPointer);
+    canvas.addEventListener("pointercancel", endPointer);
+    canvas.addEventListener("wheel", event => {
+      if (!sky) return;
+      const view = currentView();
+      event.preventDefault();
+      if (view.kind === "sky_map") {
+        zoomSkyMap(Math.exp(-event.deltaY * 0.001), canvasPoint(event));
+        drawSkyMap();
+      } else {
+        zoomGrid(view, Math.exp(-event.deltaY * 0.001));
+        gridChanged(view);
+      }
+    }, { passive: false });
+  }
+
+  attachPointerInput(element("sky-map-canvas"), () => skyMapView);
+  attachPointerInput(element("photo-canvas"), () => selected);
+
+  // ---- Mode switch: mark or free (one setting, a switch above the sky map and one above the photo) ----
 
   function setMarkValue(value) {
     markValue = value;
-    element("mode-mark").classList.toggle("selected", value === 1);
-    element("mode-free").classList.toggle("selected", value === 0);
-    element("mode-mark").setAttribute("aria-pressed", String(value === 1));
-    element("mode-free").setAttribute("aria-pressed", String(value === 0));
+    for (const button of document.querySelectorAll("[data-mark-value]")) {
+      button.classList.toggle("selected", Number(button.dataset.markValue) === value);
+      button.setAttribute("aria-pressed", String(Number(button.dataset.markValue) === value));
+    }
   }
-  element("mode-mark").addEventListener("click", () => setMarkValue(1));
-  element("mode-free").addEventListener("click", () => setMarkValue(0));
+  for (const button of document.querySelectorAll("[data-mark-value]")) button.addEventListener("click", () => setMarkValue(Number(button.dataset.markValue)));
 
   // ---- Camera ----
 
-  // Latest absolute device orientation; iOS reports the compass heading separately (webkitCompassHeading).
+  // The orientation readings: compass-based (`deviceorientationabsolute`, or `deviceorientation` where it is absolute)
+  // and gyroscope-based (`deviceorientation` on Chrome for Android), combined in camera.fusion; iOS reports the compass
+  // heading separately (webkitCompassHeading), used as it is.
+  const now = () => performance.now() / 1000;
+  const anglesOf = event => ({ alpha_deg: event.alpha, beta_deg: event.beta, gamma_deg: event.gamma });
+  const hasAngles = event => event.alpha !== null && event.beta !== null && event.gamma !== null;
+
+  function onAbsoluteOrientation(event) {
+    if (hasAngles(event)) camera.fusion.addCompass(anglesOf(event), now());
+  }
+
   function onOrientation(event) {
-    if (event.alpha === null || event.beta === null || event.gamma === null) return;
-    const absolute = event.absolute || camera.eventName === "deviceorientationabsolute";
-    const alpha = event.webkitCompassHeading !== undefined ? 360 - event.webkitCompassHeading : event.alpha;
-    camera.orientation = { alpha_deg: alpha, beta_deg: event.beta, gamma_deg: event.gamma, absolute: absolute || event.webkitCompassHeading !== undefined };
+    if (!hasAngles(event)) return;
+    if (event.webkitCompassHeading !== undefined) camera.compassHeading = { ...anglesOf(event), alpha_deg: 360 - event.webkitCompassHeading, time: now() };
+    else if (event.absolute) camera.fusion.addCompass(anglesOf(event), now());
+    else camera.fusion.addGyroscope(anglesOf(event), now());
+  }
+
+  // The device orientation for the camera ({alpha_deg, beta_deg, gamma_deg, absolute}), or null without readings: the
+  // gyroscope's turned to north where both readings come in (the compass's own while it settles), else the one there is.
+  function currentOrientation() {
+    const time = now(), recent = reading => reading && time - reading.time < 1;
+    const { fusion } = camera;
+    if (recent(camera.compassHeading)) return { ...camera.compassHeading, absolute: true };
+    if (fusion.active(time)) return { ...(fusion.orientation ?? fusion.compass), absolute: true };
+    if (recent(fusion.compass)) return { ...fusion.compass, absolute: true };
+    if (recent(fusion.gyroscope)) return { ...fusion.gyroscope, absolute: false };
+    return null;
+  }
+
+  // Photos wait for a steady compass where both readings come in; without readings, photos get a default orientation.
+  function shutterReady() {
+    return !camera.fusion.active(now()) || camera.fusion.ready;
+  }
+
+  // The note over the camera image (waiting for a steady compass, or compass and gyroscope disagreeing) and the shutter's state.
+  function showSensorState() {
+    const { fusion } = camera, status = fusion.status;
+    let note = "";
+    if (fusion.active(now()) && !fusion.ready) {
+      note = "Hold the phone still until the compass is steady" + (status.spread === null ? "" : ` (it varies by ${status.spread.toFixed(0)}°)`)
+        + ". If it stays unsteady, move the phone in a figure 8 to calibrate the compass.";
+    } else if (fusion.active(now()) && status.warn) {
+      note = `Compass and gyroscope differ by ${status.difference.toFixed(0)}°: move the phone in a figure 8 to calibrate the compass, away from metal and magnets (e.g. a magnetic phone case). The compass corrects the view slowly.`;
+    }
+    element("camera-note").textContent = note;
+    element("camera-note").hidden = !note;
+    element("camera-shoot").disabled = !shutterReady();
   }
 
   function screenAngle() {
     return screen.orientation?.angle ?? window.orientation ?? 0;
   }
 
-  function liveView() {
+  function liveView(orientation) {
     const video = element("camera-video");
-    const { alpha_deg, beta_deg, gamma_deg } = camera.orientation;
+    const { alpha_deg, beta_deg, gamma_deg } = orientation;
     return { alpha_deg, beta_deg, gamma_deg, screen_angle_deg: screenAngle(), fov_deg: defaultFov(), width: video.videoWidth, height: video.videoHeight };
   }
 
@@ -542,10 +610,12 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     if (!camera.running) return;
     const video = element("camera-video");
     const overlay = element("camera-overlay");
-    if (camera.orientation && video.videoWidth && !camera.requestInFlight) {
+    showSensorState();
+    const orientation = currentOrientation();
+    if (orientation && video.videoWidth && !camera.requestInFlight) {
       camera.requestInFlight = true;
       try {
-        camera.projection = await call("projectSky", liveView());
+        camera.projection = await call("projectSky", liveView(orientation));
       } catch (error) {
         camera.running = false;
         camera.requestInFlight = false;
@@ -560,8 +630,8 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       const covered = coveredPatches();
       drawPatches(overlayContext, patchCorners({ kind: "photo", projection: camera.projection }), displayScale(overlay), { markers: camera.projection.markers, horizon: camera.projection.horizon, sunPaths: camera.projection.sun_paths, filled: covered, fillStyle: COVERED_FILL });
       const { azimuth_deg, elevation_deg, roll_deg } = camera.projection.view;
-      element("camera-status").textContent = `Camera: azimuth ${azimuth_deg.toFixed(0)}°, elevation ${elevation_deg.toFixed(0)}°, roll ${roll_deg.toFixed(0)}°; blue: covered by earlier photos (${percentCovered(covered)} of the sky)`
-        + (camera.orientation.absolute ? "" : "; no compass: correct the azimuth after taking the photo");
+      element("camera-status").textContent = `${camera.photosTaken} photo${camera.photosTaken === 1 ? "" : "s"} taken; camera: azimuth ${azimuth_deg.toFixed(0)}°, elevation ${elevation_deg.toFixed(0)}°, roll ${roll_deg.toFixed(0)}°; blue: covered by earlier photos (${percentCovered(covered)} of the sky)`
+        + (orientation.absolute ? "" : "; no compass: correct the azimuth after taking the photo");
     }
     requestAnimationFrame(liveOverlay);
   }
@@ -592,17 +662,19 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       if (permission !== "granted") report("No access to the motion sensors: set the camera orientation by hand after taking the photo");
     }
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser offers no camera access (it needs https or localhost); load a photo file instead");
-    camera.eventName = "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation";
-    camera.listener = onOrientation;
-    window.addEventListener(camera.eventName, camera.listener);
+    camera.fusion = new HeadingFusion();
+    camera.compassHeading = null;
+    camera.listeners = [["deviceorientation", onOrientation], ...("ondeviceorientationabsolute" in window ? [["deviceorientationabsolute", onAbsoluteOrientation]] : [])];
+    for (const [name, listener] of camera.listeners) window.addEventListener(name, listener);
     camera.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
     const video = element("camera-video");
     video.srcObject = camera.stream;
     await video.play();
     window.addEventListener("keydown", onCameraKey);
+    camera.photosTaken = 0;
     camera.running = true;
     element("camera-status").textContent = "Waiting for the motion sensors ... (without them, the photo gets a default orientation to align afterwards)";
-    report(`Camera started (${video.videoWidth} x ${video.videoHeight} pixels, orientation from ${camera.eventName})`);
+    report(`Camera started (${video.videoWidth} x ${video.videoHeight} pixels, orientation from ${camera.listeners.map(([name]) => name).join(" and ")})`);
     requestAnimationFrame(liveOverlay);
   }
 
@@ -610,24 +682,58 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     camera.running = false;
     camera.stream?.getTracks().forEach(track => track.stop());
     camera.stream = null;
-    if (camera.listener) window.removeEventListener(camera.eventName, camera.listener);
-    camera.listener = null;
+    for (const [name, listener] of camera.listeners) window.removeEventListener(name, listener);
+    camera.listeners = [];
     window.removeEventListener("keydown", onCameraKey);
     if (document.fullscreenElement) document.exitFullscreen().catch(error => report(`Could not leave full screen: ${error.message}`));
     element("camera").hidden = true;
+    // After a series of photos, the sky map shows them all merged.
+    if (camera.photosTaken > 0) {
+      select(null);
+      element("sky-map-canvas").scrollIntoView({ block: "center" });
+    }
+    camera.photosTaken = 0;
   }
 
+  // A short white flash over the camera image as feedback that a photo was taken.
+  function flash() {
+    const layer = element("camera-flash");
+    layer.classList.remove("flashing");
+    void layer.offsetWidth;     // restart the animation
+    layer.classList.add("flashing");
+  }
+
+  // Take a photo and stay in the camera: the live view then marks the patches the new photo covers, so the next photo
+  // can aim at the rest of the sky. "Done" leaves the camera.
   async function takePhoto() {
+    if (camera.shooting || !camera.running || !shutterReady()) return;
+    camera.shooting = true;
+    try {
+      await shoot();
+    } finally {
+      camera.shooting = false;
+    }
+  }
+
+  async function shoot() {
     const video = element("camera-video");
     const frame = document.createElement("canvas");
     frame.width = video.videoWidth;
     frame.height = video.videoHeight;
     frame.getContext("2d").drawImage(video, 0, 0);
+    // The first photo fixes the compass reference; from then on, the compass only corrects it slowly.
+    if (!camera.fusion.locked && camera.fusion.ready) {
+      camera.fusion.lock(now());
+      report(`Compass reference fixed: gyroscope heading turned by ${camera.fusion.estimate.toFixed(1)}° (compass varying by ${camera.fusion.status.spread?.toFixed(1) ?? "?"}°)`);
+    }
     // The orientation at the moment of the shot; without sensors, a default view to correct by hand.
-    const view = camera.orientation ? (await call("projectSky", liveView())).view : { ...DEFAULT_PHOTO_VIEW, fov_deg: defaultFov() };
+    const orientation = currentOrientation();
+    const view = orientation ? (await call("projectSky", liveView(orientation))).view : { ...DEFAULT_PHOTO_VIEW, fov_deg: defaultFov() };
+    if (camera.fusion.active(now())) report(`Compass and gyroscope differ by ${camera.fusion.status.difference?.toFixed(1) ?? "?"}°`);
     const taken = new Date().toISOString();
-    stopCamera();
-    await addPhoto(frame, view, `Photo ${views.length}`, taken);
+    flash();
+    camera.photosTaken += 1;
+    await addPhoto(frame, view, `Photo ${photos.length + 1}`, taken, false);
   }
 
   // ---- Files: photos and photo sets ----
@@ -661,21 +767,20 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   }
 
   function photoSetText() {
-    const photos = views.filter(view => view.kind === "photo").map(view => ({ name: view.name, taken: view.taken, view: view.view, image: view.image.toDataURL("image/jpeg", 0.85) }));
-    return JSON.stringify({ format_version: PHOTO_SET_FORMAT_VERSION, kind: "photo_set", photos });
+    const entries = photos.map(photo => ({ name: photo.name, taken: photo.taken, view: photo.view, image: photo.image.toDataURL("image/jpeg", 0.85) }));
+    return JSON.stringify({ format_version: PHOTO_SET_FORMAT_VERSION, kind: "photo_set", photos: entries });
   }
 
   // The photos as JPEG bytes with their camera views, for a project (#37).
   async function photoFiles() {
     const toJpeg = canvas => new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Could not encode a photo as JPEG")), "image/jpeg", 0.85));
-    return Promise.all(views.filter(view => view.kind === "photo").map(async view => ({ name: view.name, taken: view.taken, view: view.view, bytes: new Uint8Array(await (await toJpeg(view.image)).arrayBuffer()) })));
+    return Promise.all(photos.map(async photo => ({ name: photo.name, taken: photo.taken, view: photo.view, bytes: new Uint8Array(await (await toJpeg(photo.image)).arrayBuffer()) })));
   }
 
-  // Replace all photos, e.g. by those of a loaded project ([{name, taken, view, bytes}] with JPEG bytes); they are
-  // projected when marking starts (or right away while marking).
-  async function setPhotos(photos) {
+  // Replace all photos, e.g. by those of a loaded project ([{name, taken, view, bytes}] with JPEG bytes).
+  async function setPhotos(newPhotos) {
     const loaded = [];
-    for (const { name, taken, view, bytes } of photos) {
+    for (const { name, taken, view, bytes } of newPhotos) {
       const url = URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
       try {
         loaded.push(makePhoto(await loadImage(url), view, name, taken));
@@ -683,20 +788,19 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
         URL.revokeObjectURL(url);
       }
     }
-    views.splice(1, views.length - 1, ...loaded);
+    photos.splice(0, photos.length, ...loaded);
+    selected = null;
     skyMapPhotos = null;
-    current = 0;
+    showPhotoList();
+    for (const photo of loaded) await project(photo);
     photosChanged();
-    if (isOpen()) {
-      for (const photo of loaded) await project(photo);
-      showViews();
-      draw();
-    }
+    drawSkyMap();
   }
 
-  // ---- Opening and closing ----
+  // ---- Start state ----
 
-  // (Re)start from the current obstructed sky description, e.g. after loading another one.
+  // (Re)start marking from the current obstructed sky description (or a free sky), e.g. after loading another one or
+  // a change of the site (sun paths).
   async function reload() {
     const { latitude, longitude } = site();
     const start = await call("startEditing", nSkyNodes(), latitude, longitude);
@@ -708,54 +812,20 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     flags = Uint8Array.from(start.obstructed);
     skyMapPixels = sky.nodes.map(skyMapPosition);
     methodsUsed.clear();
-    report(`Marking obstructions on ${start.triangles.length} sky patches; start state: ${start.method === "none" ? "free sky" : start.method}`);
-    for (const view of views) if (view.kind === "photo") await project(view);
-    showViews();
-    draw();
-  }
-
-  async function open() {
-    viewsWhenOpened = views.map(view => view.kind === "photo" ? { ...view, view: { ...view.view } } : view);
-    setMarkValue(1);
-    element("editor").hidden = false;
-    document.body.classList.add("overlay-open");
-    await reload();
-  }
-
-  function isOpen() {
-    return !element("editor").hidden;
-  }
-
-  function close() {
-    stopCamera();
-    element("editor").hidden = true;
-    document.body.classList.remove("overlay-open");
-  }
-
-  // Close and restore the photos (added, removed, aligned) as they were when opened; the page restores the obstructed
-  // sky description.
-  function cancel() {
-    views.splice(0, views.length, ...viewsWhenOpened);
-    current = 0;
+    report(`Marking obstructions on ${start.triangles.length} sky patches; start state: ${start.method === "none" || !start.method ? "free sky" : start.method}`);
+    for (const photo of photos) await project(photo);
     skyMapPhotos = null;
-    close();
-    photosChanged();
-  }
-
-  async function freeAll() {
-    flags.fill(0);
-    methodsUsed.add(views[current].kind);
     draw();
-    await apply();
   }
 
+  element("sky-map-controls").textContent = CONTROLS_TEXT.sky_map;
+  element("photo-controls").textContent = CONTROLS_TEXT.photo;
   for (const key of ["azimuth_deg", "elevation_deg", "roll_deg", "fov_deg"]) element(`photo-${key}`).addEventListener("input", photoSettingChanged);
-  element("sky-map-photos").addEventListener("change", draw);
-  element("photo-remove").addEventListener("click", removePhoto);
+  element("sky-map-photos").addEventListener("change", drawSkyMap);
 
   return {
-    open, close, cancel, reload, startCamera, stopCamera, takePhoto, loadPhotoFile, photoSetText, photoFiles, setPhotos, freeAll,
-    get isOpen() { return isOpen(); },
-    get hasPhotos() { return views.some(view => view.kind === "photo"); },
+    reload, redraw: draw, startCamera, stopCamera, takePhoto, loadPhotoFile, photoSetText, photoFiles, setPhotos,
+    get isStarted() { return sky !== null; },
+    get hasPhotos() { return photos.length > 0; },
   };
 }

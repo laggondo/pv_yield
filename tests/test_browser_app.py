@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 from pv_yield_estimator.browser import BrowserSession, config_json_from_yaml, config_yaml_from_json, site_name, site_name_result, site_search, site_search_results, versions, weather_downloads
+from pv_yield_estimator.core.photo import camera_orientation_from_device
 from test_weather import open_meteo_response
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -177,7 +178,7 @@ def test_browser_helpers():
 def test_build_site(tmp_path):
     """The site holds the page, the worker and the package zip."""
     site = load_build_site_module().build_site(tmp_path / "site")
-    for path in ("index.html", "app.js", "sky_editor.js", "worker.js", "style.css", "proof/index.html"):
+    for path in ("index.html", "app.js", "sky_editor.js", "heading.js", "worker.js", "style.css", "proof/index.html"):
         assert (site / path).is_file(), path
     with zipfile.ZipFile(site / "pv_yield_estimator.zip") as archive:
         names = archive.namelist()
@@ -250,9 +251,9 @@ def test_browser_page_computes_sample(tmp_path, session):
             wait_idle()
             return path.read_bytes()
 
-        def tap_canvas(fraction_x, fraction_y):
-            """Click the marking canvas at a fraction of its size; the locator waits until the canvas stops moving (the editor scrolls into view smoothly)."""
-            canvas = page.locator("#editor-canvas")
+        def tap_canvas(canvas_id, fraction_x, fraction_y):
+            """Click a marking canvas (sky map or photo) at a fraction of its size; the locator waits until the canvas stops moving (it scrolls into view smoothly)."""
+            canvas = page.locator(f"#{canvas_id}")
             canvas.scroll_into_view_if_needed()
             page.wait_for_timeout(1000)
             box = canvas.bounding_box()
@@ -312,66 +313,80 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert page.locator("#log").is_hidden()
             page.click("#log-details summary")
             assert page.locator("#log").is_visible() and "Computed" in page.text_content("#log")
-            ### Marking obstructions by hand, starting from the sample: on the sky map, on a loaded photo and on a camera photo.
+            ### Marking obstructions by hand, starting from the sample: on the sky map (always shown at the top of the tab), on a loaded photo and on camera photos.
             n_sample_obstructed = sum(json.loads(SKY_PATH.read_text())["obstructed"])
             page.click("#tabs [data-tab=obstruction]")
-            page.click("#photo summary")
-            page.click("#sky-edit")
-            wait_idle()
-            assert f"{n_sample_obstructed} of" in page.text_content("#editor-summary")
-            tap_canvas(0.52, 0.48)                       ### near the zenith, free in the sample; "Mark" is the default mode
+            assert page.locator("#sky-map-canvas").is_visible() and page.input_value("#n_sky_nodes") == "500"   ### the setting that gives the sample's grid
+            tap_canvas("sky-map-canvas", 0.52, 0.48)     ### near the zenith, free in the sample; "Mark" is the default mode
             page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map')", timeout=60_000)
-            assert f"{n_sample_obstructed} of" not in page.text_content("#editor-summary")
+            assert f": {n_sample_obstructed + 1} of" in page.text_content("#sky-summary")
+            ### Only one source section is open at a time (#40).
+            page.click("#lidar summary")
+            page.click("#photo summary")
+            assert page.evaluate("document.getElementById('photo').open && !document.getElementById('lidar').open")
             photo_path = tmp_path / "sky.png"
             pytest.importorskip("matplotlib.pyplot").imsave(photo_path, np.full((300, 400, 3), 0.7))
             page.set_input_files("#photo-file", photo_path)
             wait_idle()
-            assert page.input_value("#photo-azimuth_deg") == "180" and page.input_value("#photo-elevation_deg") == "15" and page.locator("#editor-views button").count() == 2
-            ### The patch in the photo's centre may be obstructed or free in the sample: marking and then freeing it changes it at least once.
-            tap_canvas(0.5, 0.5)
-            page.click("#mode-free")
-            tap_canvas(0.5, 0.5)
+            assert page.input_value("#photo-azimuth_deg") == "180" and page.input_value("#photo-elevation_deg") == "15" and page.locator("#photo-list .photo-item").count() == 1
+            assert page.locator("#photo-canvas").is_visible()
+            ### The patch in the photo's centre may be obstructed or free in the sample: marking and then freeing it changes it at least once; the switch above the photo is the one above the sky map.
+            tap_canvas("photo-canvas", 0.5, 0.5)
+            page.click("#mode-free-photo")
+            assert "selected" in page.get_attribute("#mode-free", "class")
+            tap_canvas("photo-canvas", 0.5, 0.5)
             page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map+photo')", timeout=60_000)
-            marked_before = page.text_content("#editor-summary")
+            page.click("#mode-mark")
+            marked_before = page.text_content("#sky-summary")
             ### Aligning the photo: dragging the sky grid to the right with the right mouse button turns the camera to the left (east of south).
-            box = page.locator("#editor-canvas").bounding_box()
+            page.locator("#photo-canvas").scroll_into_view_if_needed()
+            page.wait_for_timeout(1000)
+            box = page.locator("#photo-canvas").bounding_box()
             page.mouse.move(box["x"] + 0.5 * box["width"], box["y"] + 0.5 * box["height"])
             page.mouse.down(button="right")
             page.mouse.move(box["x"] + 0.7 * box["width"], box["y"] + 0.5 * box["height"], steps=5)
             page.mouse.up(button="right")
-            page.wait_for_timeout(500)
-            assert float(page.input_value("#photo-azimuth_deg")) < 175 and page.text_content("#editor-summary") == marked_before
+            page.wait_for_timeout(1000)
+            assert float(page.input_value("#photo-azimuth_deg")) < 175 and page.text_content("#sky-summary") == marked_before
             ### The sky map shows the photo merged onto the hemisphere: the grey photo's colour south of the zenith, the background in the north.
-            page.click("#editor-views button >> nth=0")
-            mean_colour = "(x, y) => { const data = document.getElementById('editor-canvas').getContext('2d').getImageData(x, y, 10, 10).data; return [0, 1, 2].map(channel => data.filter((_, index) => index % 4 === channel).reduce((sum, value) => sum + value, 0) / 100); }"
+            mean_colour = "(x, y) => { const data = document.getElementById('sky-map-canvas').getContext('2d').getImageData(x, y, 10, 10).data; return [0, 1, 2].map(channel => data.filter((_, index) => index % 4 === channel).reduce((sum, value) => sum + value, 0) / 100); }"
             south, north = page.evaluate(f"({mean_colour})(395, 695)"), page.evaluate(f"({mean_colour})(395, 95)")
-            assert np.abs(np.subtract(south, north)).max() > 20 and page.locator("#sky-map-photos").is_visible()
+            assert np.abs(np.subtract(south, north)).max() > 20
+            ### Tapping the selected photo's button again hides it.
+            page.click("#photo-list .photo-item >> nth=0 >> button >> nth=0")
+            assert page.locator("#photo-view").is_hidden()
             page.click("#camera-start")
             wait_idle()
-            page.click("#camera-shoot")
-            wait_idle()
-            assert page.locator("#editor-views button").count() == 3 and page.locator("#camera").is_hidden()
+            ### The camera stays open for a series of photos, until "Done".
+            for _ in range(2):
+                page.click("#camera-shoot")
+                wait_idle()
+            assert page.locator("#photo-list .photo-item").count() == 3 and page.locator("#camera").is_visible()
+            page.click("#camera-stop")
+            assert page.locator("#camera").is_hidden() and page.locator("#photo-view").is_hidden()
             photo_set_path = tmp_path / "photo_set.json"
             photo_set_path.write_bytes(download("#photos-save"))
-            assert json.loads(photo_set_path.read_text())["kind"] == "photo_set"
-            ### Cancel: back to the sample, as before marking.
-            page.click("#editor-cancel")
+            assert len(json.loads(photo_set_path.read_text())["photos"]) == 3
+            ### The trash buttons remove the photos.
+            for remaining in (2, 1, 0):
+                page.click("#photo-list .photo-item >> nth=0 >> button.remove")
+                assert page.locator("#photo-list .photo-item").count() == remaining
+            ### "No obstruction" frees the sky.
+            page.click("#sky-clear")
             wait_idle()
-            assert page.locator("#editor").is_hidden() and f"sample_obstructed_sky.json: {n_sample_obstructed} of" in page.text_content("#sky-summary")
-            ### Obstruction from the LiDAR sample with the sample config's settings.
+            assert "no obstruction" in page.text_content("#sky-summary")
+            ### Obstruction from the LiDAR sample with the sample config's settings (resolution 500 sky nodes, as set from the loaded sample).
             page.click("#lidar summary")
             page.fill("#scanner_heading_deg", "188.1")
             page.set_input_files("#lidar-file", POINT_CLOUD_PATH)
             page.click("#lidar-compute")
             wait_idle()
-            assert f"{sum(json.loads(SKY_PATH.read_text())['obstructed'])} of" in page.text_content("#sky-summary")
+            assert f"{n_sample_obstructed} of" in page.text_content("#sky-summary")
             ### Project (#37): with the photo set loaded again, saved with all inputs and the results (computed again, as the inputs changed), then loaded and computed again.
-            page.click("#sky-edit")
-            wait_idle()
+            page.click("#photo summary")
             page.set_input_files("#photo-file", photo_set_path)
             wait_idle()
-            assert page.locator("#editor-views button").count() == 3
-            page.click("#editor-close")
+            assert page.locator("#photo-list .photo-item").count() == 3
             page.click("#menu-button")
             project_path = tmp_path / "project.zip"
             project_path.write_bytes(download("#project-save"))
@@ -383,10 +398,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert page.evaluate("window.pvYieldApp.lastResult.key_figures") == pytest.approx(key_figures, rel=1e-6)
             assert page.evaluate("document.getElementById('lidar-file').files[0].name") == POINT_CLOUD_PATH.name and "obstructed_sky_2026" in page.text_content("#sky-summary")
             page.click("#tabs [data-tab=obstruction]")
-            page.click("#sky-edit")
-            wait_idle()
-            assert page.locator("#editor-views button").count() == 3
-            page.click("#editor-close")
+            assert page.locator("#photo-list .photo-item").count() == 3
             ### The inputs are restored after a reload, also the photos (stored a second after the last change).
             page.wait_for_timeout(2000)
             page.reload()
@@ -394,11 +406,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert page.locator("#tab-obstruction").is_visible()                ### the tab is kept in the URL
             assert "Freiburg-pvgis-tmy.csv" in page.text_content("#weather-summary") and "obstructed_sky_2026" in page.text_content("#sky-summary")
             assert page.input_value("#scanner_heading_deg") == "188.1"
-            page.click("#photo summary")
-            page.click("#sky-edit")
-            wait_idle()
-            assert page.locator("#editor-views button").count() == 3
-            page.click("#editor-close")
+            assert page.locator("#photo-list .photo-item").count() == 3
             ### "No obstruction" removes the obstructed sky description again.
             page.click("#tabs [data-tab=obstruction]")
             page.click("#sky-clear")
@@ -410,6 +418,41 @@ def test_browser_page_computes_sample(tmp_path, session):
             wait_idle()
             assert page.text_content("#weather-summary") == "not loaded" and page.input_value("#scanner_heading_deg") == "0" and page.locator("#tab-site").is_visible()
             assert page.evaluate("window.pvYieldApp.lastResult") is None
+            ### Marking on the sky map works after a new project (the session was reset), starting from a free sky.
+            page.click("#tabs [data-tab=obstruction]")
+            tap_canvas("sky-map-canvas", 0.52, 0.48)
+            page.wait_for_function("document.getElementById('sky-summary').textContent.includes(': 1 of')", timeout=60_000)
+            assert page.evaluate("document.body.dataset.state") != "error", page.text_content("#log")
+            ### Camera with both orientation readings, as on Chrome for Android (synthetic events): the gyroscope's (heading from an arbitrary start) and the compass's, 30° apart.
+            ### The shutter waits for a steady compass; the photo gets the compass's heading via the gyroscope; a compass that then disagrees asks for the figure-8 movement and moves the view only slowly.
+            page.evaluate("document.getElementById('photo').open = true")
+            page.click("#camera-start")
+            wait_idle()
+            page.evaluate("""() => {
+                window.compassAlpha = 130;
+                window.sensorTimer = setInterval(() => {
+                    window.dispatchEvent(new DeviceOrientationEvent("deviceorientation", { alpha: 100, beta: 80, gamma: 0, absolute: false }));
+                    window.dispatchEvent(new DeviceOrientationEvent("deviceorientationabsolute", { alpha: window.compassAlpha, beta: 80, gamma: 0, absolute: true }));
+                }, 50);
+            }""")
+            page.wait_for_timeout(500)
+            assert page.is_disabled("#camera-shoot") and "Hold the phone still" in page.text_content("#camera-note")
+            page.wait_for_function("!document.getElementById('camera-shoot').disabled", timeout=10_000)
+            assert page.locator("#camera-note").is_hidden()
+            page.click("#camera-shoot")
+            wait_idle()
+            page.evaluate("window.compassAlpha = 220")
+            page.wait_for_function("document.getElementById('camera-note').textContent.includes('figure 8')", timeout=10_000)
+            assert page.is_enabled("#camera-shoot")
+            page.click("#camera-shoot")
+            wait_idle()
+            page.evaluate("clearInterval(window.sensorTimer)")
+            page.click("#camera-stop")
+            expected_azimuth = camera_orientation_from_device(130, 80, 0)["azimuth_deg"]
+            page.click("#photo-list .photo-item >> nth=0 >> button >> nth=0")
+            assert float(page.input_value("#photo-azimuth_deg")) == pytest.approx(expected_azimuth, abs=0.1)
+            page.click("#photo-list .photo-item >> nth=1 >> button >> nth=0")
+            assert abs(float(page.input_value("#photo-azimuth_deg")) - expected_azimuth) < 10       ### the wild compass moved the view only a little
         finally:
             print("\n".join(messages))
             browser.close()

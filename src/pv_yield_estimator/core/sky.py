@@ -77,6 +77,16 @@ class SkyDiscretization:
         triangles are the faces of the convex hull of the nodes, without the flat bottom faces in the horizon plane.
         For the same `n_sky_nodes`, the nodes equal those of the legacy `DensitySkyDiscretization`.
         """
+        nodes = cls.ring_nodes(n_sky_nodes)
+        hull = ConvexHull(nodes)
+        triangles = np.array([simplex for simplex in hull.simplices if not np.allclose(nodes[simplex, 2], 0.0)])
+        sky = cls(nodes, triangles)
+        log.debug(f"Sky discretization: {len(sky.nodes)} nodes, {len(sky.triangles)} patches, mean edge {np.degrees(sky.mean_edge_angle_rad()):.1f}°")
+        return sky
+
+    @staticmethod
+    def ring_layout(n_sky_nodes=500):
+        """Zenith angles of the rings of `from_node_count` and the number of nodes on each."""
         if n_sky_nodes < 5:
             raise ValueError(f"n_sky_nodes must be at least 5, got {n_sky_nodes}")
         ### Node spacing so that rings of perimeter 2π sin(zenith) with this spacing give about n_sky_nodes nodes.
@@ -85,15 +95,31 @@ class SkyDiscretization:
         ring_zeniths = np.linspace(0.0, np.pi / 2, n_rings)
         nodes_per_ring = np.maximum(np.round(2 * np.pi * np.sin(ring_zeniths) / node_spacing).astype(int), 1)
         nodes_per_ring[0] = 1
+        return ring_zeniths, nodes_per_ring
+
+    @classmethod
+    def ring_nodes(cls, n_sky_nodes=500):
+        """The nodes of `from_node_count`: about `n_sky_nodes` unit vectors in rings of constant zenith angle."""
+        ring_zeniths, nodes_per_ring = cls.ring_layout(n_sky_nodes)
         zenith = np.concatenate([np.full(count, ring_zenith) for ring_zenith, count in zip(ring_zeniths, nodes_per_ring)])
         azimuth = np.concatenate([np.pi + np.arange(count) * 2 * np.pi / count for count in nodes_per_ring])
         nodes = directions_from_zenith_azimuth(zenith, azimuth)
         nodes[np.isclose(zenith, np.pi / 2), 2] = 0.0
-        hull = ConvexHull(nodes)
-        triangles = np.array([simplex for simplex in hull.simplices if not np.allclose(nodes[simplex, 2], 0.0)])
-        sky = cls(nodes, triangles)
-        log.debug(f"Sky discretization: {len(sky.nodes)} nodes, {len(sky.triangles)} patches, mean edge {np.degrees(sky.mean_edge_angle_rad()):.1f}°")
-        return sky
+        return nodes
+
+    def node_count_setting(self):
+        """The `n_sky_nodes` for which `from_node_count` gives these nodes (the smallest such value), or None for another discretization.
+
+        Several settings give the same nodes; the actual node count differs from the setting by a few percent.
+        """
+        n_nodes = len(self.nodes)
+        for n_sky_nodes in range(max(5, int(n_nodes / 1.2)), int(n_nodes * 1.2) + 2):
+            if self.ring_layout(n_sky_nodes)[1].sum() != n_nodes:
+                continue
+            nodes = self.ring_nodes(n_sky_nodes)
+            if np.allclose(nodes, self.nodes, atol=1e-9):
+                return n_sky_nodes
+        return None
 
     def _orient_triangles_outwards(self):
         """Reorder triangle corners so that each triangle is counterclockwise seen from outside the sphere."""
