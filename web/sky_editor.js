@@ -11,6 +11,8 @@
 // Python (core/photo.py); this module only draws and handles input. Photos are assumed to be taken from the panel
 // position: no offset is applied (#11).
 
+import { HeadingFusion } from "./heading.js";
+
 const PHOTO_SET_FORMAT_VERSION = 1;
 const MAX_PHOTO_PX = 1600;           // longer side of stored photos, to keep memory and saved files small
 const SKY_MAP_PX = 800;
@@ -47,7 +49,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   let markValue = 1;                   // what tapping sets: 1 marks as obstructed, 0 frees
   let photosChangedTimer = null;
   let skyMapRedrawTimer = null;
-  const camera = { stream: null, orientation: null, listener: null, eventName: null, projection: null, running: false, requestInFlight: false, photosTaken: 0, shooting: false };
+  const camera = { stream: null, fusion: new HeadingFusion(), compassHeading: null, listeners: [], projection: null, running: false, requestInFlight: false, photosTaken: 0, shooting: false };
 
   // ---- Geometry ----
 
@@ -543,21 +545,63 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
 
   // ---- Camera ----
 
-  // Latest absolute device orientation; iOS reports the compass heading separately (webkitCompassHeading).
+  // The orientation readings: compass-based (`deviceorientationabsolute`, or `deviceorientation` where it is absolute)
+  // and gyroscope-based (`deviceorientation` on Chrome for Android), combined in camera.fusion; iOS reports the compass
+  // heading separately (webkitCompassHeading), used as it is.
+  const now = () => performance.now() / 1000;
+  const anglesOf = event => ({ alpha_deg: event.alpha, beta_deg: event.beta, gamma_deg: event.gamma });
+  const hasAngles = event => event.alpha !== null && event.beta !== null && event.gamma !== null;
+
+  function onAbsoluteOrientation(event) {
+    if (hasAngles(event)) camera.fusion.addCompass(anglesOf(event), now());
+  }
+
   function onOrientation(event) {
-    if (event.alpha === null || event.beta === null || event.gamma === null) return;
-    const absolute = event.absolute || camera.eventName === "deviceorientationabsolute";
-    const alpha = event.webkitCompassHeading !== undefined ? 360 - event.webkitCompassHeading : event.alpha;
-    camera.orientation = { alpha_deg: alpha, beta_deg: event.beta, gamma_deg: event.gamma, absolute: absolute || event.webkitCompassHeading !== undefined };
+    if (!hasAngles(event)) return;
+    if (event.webkitCompassHeading !== undefined) camera.compassHeading = { ...anglesOf(event), alpha_deg: 360 - event.webkitCompassHeading, time: now() };
+    else if (event.absolute) camera.fusion.addCompass(anglesOf(event), now());
+    else camera.fusion.addGyroscope(anglesOf(event), now());
+  }
+
+  // The device orientation for the camera ({alpha_deg, beta_deg, gamma_deg, absolute}), or null without readings: the
+  // gyroscope's turned to north where both readings come in (the compass's own while it settles), else the one there is.
+  function currentOrientation() {
+    const time = now(), recent = reading => reading && time - reading.time < 1;
+    const { fusion } = camera;
+    if (recent(camera.compassHeading)) return { ...camera.compassHeading, absolute: true };
+    if (fusion.active(time)) return { ...(fusion.orientation ?? fusion.compass), absolute: true };
+    if (recent(fusion.compass)) return { ...fusion.compass, absolute: true };
+    if (recent(fusion.gyroscope)) return { ...fusion.gyroscope, absolute: false };
+    return null;
+  }
+
+  // Photos wait for a steady compass where both readings come in; without readings, photos get a default orientation.
+  function shutterReady() {
+    return !camera.fusion.active(now()) || camera.fusion.ready;
+  }
+
+  // The note over the camera image (waiting for a steady compass, or compass and gyroscope disagreeing) and the shutter's state.
+  function showSensorState() {
+    const { fusion } = camera, status = fusion.status;
+    let note = "";
+    if (fusion.active(now()) && !fusion.ready) {
+      note = "Hold the phone still until the compass is steady" + (status.spread === null ? "" : ` (it varies by ${status.spread.toFixed(0)}°)`)
+        + ". If it stays unsteady, move the phone in a figure 8 to calibrate the compass.";
+    } else if (fusion.active(now()) && status.warn) {
+      note = `Compass and gyroscope differ by ${status.difference.toFixed(0)}°: move the phone in a figure 8 to calibrate the compass, away from metal and magnets (e.g. a magnetic phone case). The compass corrects the view slowly.`;
+    }
+    element("camera-note").textContent = note;
+    element("camera-note").hidden = !note;
+    element("camera-shoot").disabled = !shutterReady();
   }
 
   function screenAngle() {
     return screen.orientation?.angle ?? window.orientation ?? 0;
   }
 
-  function liveView() {
+  function liveView(orientation) {
     const video = element("camera-video");
-    const { alpha_deg, beta_deg, gamma_deg } = camera.orientation;
+    const { alpha_deg, beta_deg, gamma_deg } = orientation;
     return { alpha_deg, beta_deg, gamma_deg, screen_angle_deg: screenAngle(), fov_deg: defaultFov(), width: video.videoWidth, height: video.videoHeight };
   }
 
@@ -566,10 +610,12 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     if (!camera.running) return;
     const video = element("camera-video");
     const overlay = element("camera-overlay");
-    if (camera.orientation && video.videoWidth && !camera.requestInFlight) {
+    showSensorState();
+    const orientation = currentOrientation();
+    if (orientation && video.videoWidth && !camera.requestInFlight) {
       camera.requestInFlight = true;
       try {
-        camera.projection = await call("projectSky", liveView());
+        camera.projection = await call("projectSky", liveView(orientation));
       } catch (error) {
         camera.running = false;
         camera.requestInFlight = false;
@@ -585,7 +631,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       drawPatches(overlayContext, patchCorners({ kind: "photo", projection: camera.projection }), displayScale(overlay), { markers: camera.projection.markers, horizon: camera.projection.horizon, sunPaths: camera.projection.sun_paths, filled: covered, fillStyle: COVERED_FILL });
       const { azimuth_deg, elevation_deg, roll_deg } = camera.projection.view;
       element("camera-status").textContent = `${camera.photosTaken} photo${camera.photosTaken === 1 ? "" : "s"} taken; camera: azimuth ${azimuth_deg.toFixed(0)}°, elevation ${elevation_deg.toFixed(0)}°, roll ${roll_deg.toFixed(0)}°; blue: covered by earlier photos (${percentCovered(covered)} of the sky)`
-        + (camera.orientation.absolute ? "" : "; no compass: correct the azimuth after taking the photo");
+        + (orientation.absolute ? "" : "; no compass: correct the azimuth after taking the photo");
     }
     requestAnimationFrame(liveOverlay);
   }
@@ -616,9 +662,10 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       if (permission !== "granted") report("No access to the motion sensors: set the camera orientation by hand after taking the photo");
     }
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser offers no camera access (it needs https or localhost); load a photo file instead");
-    camera.eventName = "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation";
-    camera.listener = onOrientation;
-    window.addEventListener(camera.eventName, camera.listener);
+    camera.fusion = new HeadingFusion();
+    camera.compassHeading = null;
+    camera.listeners = [["deviceorientation", onOrientation], ...("ondeviceorientationabsolute" in window ? [["deviceorientationabsolute", onAbsoluteOrientation]] : [])];
+    for (const [name, listener] of camera.listeners) window.addEventListener(name, listener);
     camera.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
     const video = element("camera-video");
     video.srcObject = camera.stream;
@@ -627,7 +674,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     camera.photosTaken = 0;
     camera.running = true;
     element("camera-status").textContent = "Waiting for the motion sensors ... (without them, the photo gets a default orientation to align afterwards)";
-    report(`Camera started (${video.videoWidth} x ${video.videoHeight} pixels, orientation from ${camera.eventName})`);
+    report(`Camera started (${video.videoWidth} x ${video.videoHeight} pixels, orientation from ${camera.listeners.map(([name]) => name).join(" and ")})`);
     requestAnimationFrame(liveOverlay);
   }
 
@@ -635,8 +682,8 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     camera.running = false;
     camera.stream?.getTracks().forEach(track => track.stop());
     camera.stream = null;
-    if (camera.listener) window.removeEventListener(camera.eventName, camera.listener);
-    camera.listener = null;
+    for (const [name, listener] of camera.listeners) window.removeEventListener(name, listener);
+    camera.listeners = [];
     window.removeEventListener("keydown", onCameraKey);
     if (document.fullscreenElement) document.exitFullscreen().catch(error => report(`Could not leave full screen: ${error.message}`));
     element("camera").hidden = true;
@@ -659,7 +706,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   // Take a photo and stay in the camera: the live view then marks the patches the new photo covers, so the next photo
   // can aim at the rest of the sky. "Done" leaves the camera.
   async function takePhoto() {
-    if (camera.shooting || !camera.running) return;
+    if (camera.shooting || !camera.running || !shutterReady()) return;
     camera.shooting = true;
     try {
       await shoot();
@@ -674,8 +721,15 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     frame.width = video.videoWidth;
     frame.height = video.videoHeight;
     frame.getContext("2d").drawImage(video, 0, 0);
+    // The first photo fixes the compass reference; from then on, the compass only corrects it slowly.
+    if (!camera.fusion.locked && camera.fusion.ready) {
+      camera.fusion.lock(now());
+      report(`Compass reference fixed: gyroscope heading turned by ${camera.fusion.estimate.toFixed(1)}° (compass varying by ${camera.fusion.status.spread?.toFixed(1) ?? "?"}°)`);
+    }
     // The orientation at the moment of the shot; without sensors, a default view to correct by hand.
-    const view = camera.orientation ? (await call("projectSky", liveView())).view : { ...DEFAULT_PHOTO_VIEW, fov_deg: defaultFov() };
+    const orientation = currentOrientation();
+    const view = orientation ? (await call("projectSky", liveView(orientation))).view : { ...DEFAULT_PHOTO_VIEW, fov_deg: defaultFov() };
+    if (camera.fusion.active(now())) report(`Compass and gyroscope differ by ${camera.fusion.status.difference?.toFixed(1) ?? "?"}°`);
     const taken = new Date().toISOString();
     flash();
     camera.photosTaken += 1;

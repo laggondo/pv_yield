@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 from pv_yield_estimator.browser import BrowserSession, config_json_from_yaml, config_yaml_from_json, site_name, site_name_result, site_search, site_search_results, versions, weather_downloads
+from pv_yield_estimator.core.photo import camera_orientation_from_device
 from test_weather import open_meteo_response
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -177,7 +178,7 @@ def test_browser_helpers():
 def test_build_site(tmp_path):
     """The site holds the page, the worker and the package zip."""
     site = load_build_site_module().build_site(tmp_path / "site")
-    for path in ("index.html", "app.js", "sky_editor.js", "worker.js", "style.css", "proof/index.html"):
+    for path in ("index.html", "app.js", "sky_editor.js", "heading.js", "worker.js", "style.css", "proof/index.html"):
         assert (site / path).is_file(), path
     with zipfile.ZipFile(site / "pv_yield_estimator.zip") as archive:
         names = archive.namelist()
@@ -422,6 +423,36 @@ def test_browser_page_computes_sample(tmp_path, session):
             tap_canvas("sky-map-canvas", 0.52, 0.48)
             page.wait_for_function("document.getElementById('sky-summary').textContent.includes(': 1 of')", timeout=60_000)
             assert page.evaluate("document.body.dataset.state") != "error", page.text_content("#log")
+            ### Camera with both orientation readings, as on Chrome for Android (synthetic events): the gyroscope's (heading from an arbitrary start) and the compass's, 30° apart.
+            ### The shutter waits for a steady compass; the photo gets the compass's heading via the gyroscope; a compass that then disagrees asks for the figure-8 movement and moves the view only slowly.
+            page.evaluate("document.getElementById('photo').open = true")
+            page.click("#camera-start")
+            wait_idle()
+            page.evaluate("""() => {
+                window.compassAlpha = 130;
+                window.sensorTimer = setInterval(() => {
+                    window.dispatchEvent(new DeviceOrientationEvent("deviceorientation", { alpha: 100, beta: 80, gamma: 0, absolute: false }));
+                    window.dispatchEvent(new DeviceOrientationEvent("deviceorientationabsolute", { alpha: window.compassAlpha, beta: 80, gamma: 0, absolute: true }));
+                }, 50);
+            }""")
+            page.wait_for_timeout(500)
+            assert page.is_disabled("#camera-shoot") and "Hold the phone still" in page.text_content("#camera-note")
+            page.wait_for_function("!document.getElementById('camera-shoot').disabled", timeout=10_000)
+            assert page.locator("#camera-note").is_hidden()
+            page.click("#camera-shoot")
+            wait_idle()
+            page.evaluate("window.compassAlpha = 220")
+            page.wait_for_function("document.getElementById('camera-note').textContent.includes('figure 8')", timeout=10_000)
+            assert page.is_enabled("#camera-shoot")
+            page.click("#camera-shoot")
+            wait_idle()
+            page.evaluate("clearInterval(window.sensorTimer)")
+            page.click("#camera-stop")
+            expected_azimuth = camera_orientation_from_device(130, 80, 0)["azimuth_deg"]
+            page.click("#photo-list .photo-item >> nth=0 >> button >> nth=0")
+            assert float(page.input_value("#photo-azimuth_deg")) == pytest.approx(expected_azimuth, abs=0.1)
+            page.click("#photo-list .photo-item >> nth=1 >> button >> nth=0")
+            assert abs(float(page.input_value("#photo-azimuth_deg")) - expected_azimuth) < 10       ### the wild compass moved the view only a little
         finally:
             print("\n".join(messages))
             browser.close()
