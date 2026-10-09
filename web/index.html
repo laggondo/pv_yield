@@ -208,7 +208,7 @@
   <h2>PV yield estimator</h2>
   <p>Photovoltaic yield from weather data and an obstructed sky description; all computation runs in your browser (Python via Pyodide). Only the site search and the weather download contact other services.</p>
   <p>Steps: set the site and the weather (<em>Site &amp; weather</em>), optionally describe the obstructed sky from a LiDAR scan, photos or a sky map (<em>Obstruction</em>), set the panel (<em>Panel</em>), then open the <em>Results</em>: they are computed when needed.</p>
-  <p>Loaded inputs and the form are kept in this browser for your next visit (photos and the point cloud only until the page is closed or reloaded). To keep everything or move it to another device, save the project (menu ☰: one zip with all inputs and the matching results) and load it there; single files (weather, obstructed sky description, photos, config) can be saved and loaded as well.</p>
+  <p>Loaded inputs and the form are kept in this browser for your next visit, including the photos (not a LiDAR point cloud, which may be large). To keep everything or move it to another device, save the project (menu ☰: one zip with all inputs and the matching results) and load it there; single files (weather, obstructed sky description, photos, config) can be saved and loaded as well.</p>
   <p>Source code and CLI: <a href="https://github.com/laggondo/pv_yield">github.com/laggondo/pv_yield</a>.
     Sample weather data: PVGIS © European Union, 2001–2026. Downloaded weather data: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (CC BY 4.0).
     The first visit downloads about 60 MB (Pyodide, pvlib, pandas, bokeh), later visits use the browser cache.</p>

@@ -387,12 +387,18 @@ def test_browser_page_computes_sample(tmp_path, session):
             wait_idle()
             assert page.locator("#editor-views button").count() == 3
             page.click("#editor-close")
-            ### The inputs are restored after a reload.
+            ### The inputs are restored after a reload, also the photos (stored a second after the last change).
+            page.wait_for_timeout(2000)
             page.reload()
             page.wait_for_function("['ready', 'computed', 'error'].includes(document.body.dataset.state) && !document.getElementById('project-save').disabled", timeout=300_000)
             assert page.locator("#tab-obstruction").is_visible()                ### the tab is kept in the URL
             assert "Freiburg-pvgis-tmy.csv" in page.text_content("#weather-summary") and "obstructed_sky_2026" in page.text_content("#sky-summary")
             assert page.input_value("#scanner_heading_deg") == "188.1"
+            page.click("#photo summary")
+            page.click("#sky-edit")
+            wait_idle()
+            assert page.locator("#editor-views button").count() == 3
+            page.click("#editor-close")
             ### "No obstruction" removes the obstructed sky description again.
             page.click("#tabs [data-tab=obstruction]")
             page.click("#sky-clear")

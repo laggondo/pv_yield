@@ -3,7 +3,7 @@
 // are not steps (#36); the status light stays in the top bar. Opening the results tab computes the results if they are
 // missing or out of date (inputs or form changed). The page state is in document.body.dataset.state: loading, ready, busy, computed or error (used by the smoke test and
 // the red/green status light); progress messages and timings go to the log at the bottom.
-// Loaded inputs and the form are kept in IndexedDB for the next visit; files can be saved and loaded to move them
+// Loaded inputs, the photos and the form are kept in IndexedDB for the next visit (not the point cloud, which may be large); files can be saved and loaded to move them
 // between devices, one by one or all at once as a project zip (#37).
 
 import { createSkyEditor } from "./sky_editor.js";
@@ -359,7 +359,8 @@ async function skyMarked(summary) {
 }
 
 const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => requiredNumber("camera_fov_deg"), nSkyNodes: () => requiredNumber("n_sky_nodes"),
-  site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }), onApplied: skyMarked });
+  site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }), onApplied: skyMarked,
+  onPhotosChanged: async () => remember("photos", await editor.photoFiles()) });
 
 // The site's coordinates from the form, or an error asking for them.
 function siteCoordinates() {
@@ -633,12 +634,13 @@ function updateResultsIfShown() {
 
 // Restore the inputs and form of the last visit, if stored.
 async function restoreStoredInputs() {
-  const [form, weather, sky, config] = await Promise.all([recall("form"), recall("weather"), recall("sky"), recall("config")]);
+  const [form, weather, sky, config, photos] = await Promise.all([recall("form"), recall("weather"), recall("sky"), recall("config"), recall("photos")]);
   if (config) importedConfig = config;
   setFormValues(form);
   if (weather) await loadWeather(weather.text, weather.filename, weather.source ?? "auto");
   if (sky) await loadObstructedSky(sky.text, sky.filename);
-  if (form || weather || sky) report("Restored the inputs of the last visit");
+  if (photos?.length) await editor.setPhotos(photos);
+  if (form || weather || sky || photos?.length) report(`Restored the inputs of the last visit${photos?.length ? ` (${photos.length} photos)` : ""}`);
   updatePvgisLink();
 }
 

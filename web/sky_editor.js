@@ -30,8 +30,9 @@ const CONTROLS_TEXT = {
 const MAX_SKY_MAP_ZOOM = 10;
 
 // Create the editor on the page's elements; `call` runs a worker action, `report` logs, `onApplied(summary)` is called
-// after the marked flags were sent to Python as the new obstructed sky description.
-export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyNodes, site, onApplied }) {
+// after the marked flags were sent to Python as the new obstructed sky description, `onPhotosChanged()` a moment after
+// photos were added, removed or aligned (to store them for the next visit).
+export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyNodes, site, onApplied, onPhotosChanged }) {
   const canvas = element("editor-canvas");
   const context = canvas.getContext("2d");
   let sky = null;                      // {nodes, triangles}
@@ -48,6 +49,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   const skyMapZoom = { factor: 1, x: 0, y: 0 };   // sky map shown at factor × size, shifted by (x, y) canvas pixels
   let markValue = 1;                   // what tapping sets: 1 marks as obstructed, 0 frees
   let viewsWhenOpened = [];            // to restore the photos on cancel
+  let photosChangedTimer = null;
   const camera = { stream: null, orientation: null, listener: null, eventName: null, projection: null, running: false, requestInFlight: false };
 
   // ---- Geometry ----
@@ -285,8 +287,16 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     draw();
   }
 
-  // Project the sky nodes into a photo (Python); repeated requests while one runs are merged into one.
+  // Report changed photos once they stop changing for a second (aligning changes them continuously).
+  function photosChanged() {
+    clearTimeout(photosChangedTimer);
+    photosChangedTimer = setTimeout(onPhotosChanged, 1000);
+  }
+
+  // Project the sky nodes into a photo (Python); repeated requests while one runs are merged into one. Called for every
+  // new or changed camera view, so it also reports changed photos.
   async function project(view) {
+    photosChanged();
     view.projectionWanted = true;
     if (view.projecting) return;
     view.projecting = true;
@@ -336,6 +346,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     views.splice(current, 1);
     skyMapPhotos = null;
     select(Math.min(current, views.length - 1));
+    photosChanged();
   }
 
   // ---- Marking ----
@@ -675,6 +686,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     views.splice(1, views.length - 1, ...loaded);
     skyMapPhotos = null;
     current = 0;
+    photosChanged();
     if (isOpen()) {
       for (const photo of loaded) await project(photo);
       showViews();
@@ -727,6 +739,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     current = 0;
     skyMapPhotos = null;
     close();
+    photosChanged();
   }
 
   async function freeAll() {
