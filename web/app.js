@@ -122,7 +122,7 @@ function updateButtons() {
   const idle = pythonReady && document.body.dataset.state !== "busy";
   for (const id of ["site-search", "weather-download", "config-save", "project-new", "project-save"]) element(id).disabled = !idle;
   element("lidar-compute").disabled = !idle || !element("lidar-file").files.length;
-  element("camera-start").disabled = !idle || !editor.isStarted;
+  element("camera-start").disabled = element("fov-calibrate").disabled = !idle || !editor.isStarted;
   element("weather-save").disabled = !inputs.weather;
   element("sky-save").disabled = !inputs.sky;
   element("sky-clear").disabled = !idle || !inputs.sky;
@@ -368,7 +368,12 @@ async function skyMarked(summary) {
 
 const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => requiredNumber("camera_fov_deg"), nSkyNodes: () => requiredNumber("n_sky_nodes"),
   site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }), onApplied: skyMarked,
-  onPhotosChanged: async () => remember("photos", await editor.photoFiles()) });
+  onPhotosChanged: async () => remember("photos", await editor.photoFiles()),
+  // The calibrated field of view replaces the form's value, kept like the other form fields (browser, config, project).
+  onFovCalibrated: fovDeg => {
+    element("camera_fov_deg").value = fovDeg;
+    remember("form", formValues());
+  } });
 
 // The site's coordinates from the form, or an error asking for them.
 function siteCoordinates() {
@@ -719,6 +724,7 @@ element("n_sky_nodes").addEventListener("change", event => whileBusy(async () =>
 }));
 // The camera starts right in the tap's handler: iOS grants the motion sensors only then.
 element("camera-start").addEventListener("click", () => whileBusy(editor.startCamera));
+element("fov-calibrate").addEventListener("click", () => whileBusy(editor.startCalibration));
 element("camera-shoot").addEventListener("click", () => whileBusy(editor.takePhoto));
 element("camera-stop").addEventListener("click", () => editor.stopCamera());
 element("photo-file").addEventListener("change", async event => {

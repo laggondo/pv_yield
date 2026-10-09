@@ -115,7 +115,8 @@
         <summary>Mark on photos (phones)</summary>
         <p class="hint">Take photos of the sky from the panel position (the phone's sensors give the camera orientation) or load photos, then tap the obstructed sky patches on a photo; they show up on the sky map above. The patches are drawn as seen from the camera, without any offset; patches outside all photos stay as they are.</p>
         <label>Camera field of view (°, across the photo's longer side) <input type="number" id="camera_fov_deg" value="65" min="10" max="170" step="any"></label>
-        <div class="summary">Main cameras of phones see about 60–70° across the longer side; check it on a photo: the compass letters and the horizon should match.</div>
+        <div class="summary">Main cameras of phones see about 60–70° across the longer side (default 65°). Calibrate it once per phone: in the camera, put a distant object on one of two lines, then turn the phone until it sits on the other. Applies to new photos.</div>
+        <button id="fov-calibrate" class="small" disabled>Calibrate field of view (camera)</button>
         <div class="buttons">
           <button id="camera-start" disabled>Take photos (camera)</button>
           <label class="button small">Load photo or photo set <input type="file" id="photo-file" hidden></label>
