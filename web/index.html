@@ -138,7 +138,7 @@
   <p class="hint">Take the photos from the panel position: the patches are drawn as seen from the camera, without any offset. Every change is used for the next computation right away.
     Patches outside all photos stay as they are (free, unless the start state marks them).</p>
   <div class="buttons">
-    <button id="camera-start">Take photo (camera)</button>
+    <button id="camera-start">Take photos (camera)</button>
     <label class="button small">Load photo or photo set <input type="file" id="photo-file" hidden></label>
   </div>
   <div class="buttons" id="editor-views"></div>
@@ -163,12 +163,13 @@
   </div>
 </section>
 
-<!-- Full-screen camera with the sky patches over the live image. -->
+<!-- Full-screen camera with the sky patches over the live image; stays open for a series of photos until "Done". -->
 <div id="camera" hidden>
   <video id="camera-video" playsinline muted></video>
   <canvas id="camera-overlay"></canvas>
+  <div id="camera-flash"></div>
   <div id="camera-status"></div>
-  <button id="camera-stop" aria-label="Cancel">✕</button>
+  <button id="camera-stop">Done</button>
   <button id="camera-shoot" aria-label="Take photo"></button>
 </div>
 

@@ -50,7 +50,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   let markValue = 1;                   // what tapping sets: 1 marks as obstructed, 0 frees
   let viewsWhenOpened = [];            // to restore the photos on cancel
   let photosChangedTimer = null;
-  const camera = { stream: null, orientation: null, listener: null, eventName: null, projection: null, running: false, requestInFlight: false };
+  const camera = { stream: null, orientation: null, listener: null, eventName: null, projection: null, running: false, requestInFlight: false, photosTaken: 0, shooting: false };
 
   // ---- Geometry ----
 
@@ -332,11 +332,12 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     return { kind: "photo", name, taken, image: photoCanvas, view: { ...view, width: photoCanvas.width, height: photoCanvas.height } };
   }
 
-  // Add a photo with its camera view; selected for marking.
-  async function addPhoto(image, view, name, taken) {
+  // Add a photo with its camera view; selected for marking unless `selectPhoto` is false (photos taken in a series).
+  async function addPhoto(image, view, name, taken, selectPhoto = true) {
     const photo = makePhoto(image, view, name, taken);
     views.push(photo);
-    select(views.length - 1);
+    if (selectPhoto) select(views.length - 1);
+    else showViews();
     await project(photo);
     report(`Photo ${name}: azimuth ${photo.view.azimuth_deg.toFixed(1)}°, elevation ${photo.view.elevation_deg.toFixed(1)}°, roll ${photo.view.roll_deg.toFixed(1)}°, field of view ${photo.view.fov_deg}°`);
   }
@@ -560,7 +561,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       const covered = coveredPatches();
       drawPatches(overlayContext, patchCorners({ kind: "photo", projection: camera.projection }), displayScale(overlay), { markers: camera.projection.markers, horizon: camera.projection.horizon, sunPaths: camera.projection.sun_paths, filled: covered, fillStyle: COVERED_FILL });
       const { azimuth_deg, elevation_deg, roll_deg } = camera.projection.view;
-      element("camera-status").textContent = `Camera: azimuth ${azimuth_deg.toFixed(0)}°, elevation ${elevation_deg.toFixed(0)}°, roll ${roll_deg.toFixed(0)}°; blue: covered by earlier photos (${percentCovered(covered)} of the sky)`
+      element("camera-status").textContent = `${camera.photosTaken} photo${camera.photosTaken === 1 ? "" : "s"} taken; camera: azimuth ${azimuth_deg.toFixed(0)}°, elevation ${elevation_deg.toFixed(0)}°, roll ${roll_deg.toFixed(0)}°; blue: covered by earlier photos (${percentCovered(covered)} of the sky)`
         + (camera.orientation.absolute ? "" : "; no compass: correct the azimuth after taking the photo");
     }
     requestAnimationFrame(liveOverlay);
@@ -600,6 +601,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     video.srcObject = camera.stream;
     await video.play();
     window.addEventListener("keydown", onCameraKey);
+    camera.photosTaken = 0;
     camera.running = true;
     element("camera-status").textContent = "Waiting for the motion sensors ... (without them, the photo gets a default orientation to align afterwards)";
     report(`Camera started (${video.videoWidth} x ${video.videoHeight} pixels, orientation from ${camera.eventName})`);
@@ -615,9 +617,32 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     window.removeEventListener("keydown", onCameraKey);
     if (document.fullscreenElement) document.exitFullscreen().catch(error => report(`Could not leave full screen: ${error.message}`));
     element("camera").hidden = true;
+    // After a series of photos, the sky map shows them all merged.
+    if (camera.photosTaken > 0) select(0);
+    camera.photosTaken = 0;
   }
 
+  // A short white flash over the camera image as feedback that a photo was taken.
+  function flash() {
+    const layer = element("camera-flash");
+    layer.classList.remove("flashing");
+    void layer.offsetWidth;     // restart the animation
+    layer.classList.add("flashing");
+  }
+
+  // Take a photo and stay in the camera: the live view then marks the patches the new photo covers, so the next photo
+  // can aim at the rest of the sky. "Done" leaves the camera.
   async function takePhoto() {
+    if (camera.shooting || !camera.running) return;
+    camera.shooting = true;
+    try {
+      await shoot();
+    } finally {
+      camera.shooting = false;
+    }
+  }
+
+  async function shoot() {
     const video = element("camera-video");
     const frame = document.createElement("canvas");
     frame.width = video.videoWidth;
@@ -626,8 +651,9 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     // The orientation at the moment of the shot; without sensors, a default view to correct by hand.
     const view = camera.orientation ? (await call("projectSky", liveView())).view : { ...DEFAULT_PHOTO_VIEW, fov_deg: defaultFov() };
     const taken = new Date().toISOString();
-    stopCamera();
-    await addPhoto(frame, view, `Photo ${views.length}`, taken);
+    flash();
+    camera.photosTaken += 1;
+    await addPhoto(frame, view, `Photo ${views.length}`, taken, false);
   }
 
   // ---- Files: photos and photo sets ----

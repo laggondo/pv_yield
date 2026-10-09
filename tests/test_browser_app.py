@@ -348,9 +348,13 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert np.abs(np.subtract(south, north)).max() > 20 and page.locator("#sky-map-photos").is_visible()
             page.click("#camera-start")
             wait_idle()
-            page.click("#camera-shoot")
-            wait_idle()
-            assert page.locator("#editor-views button").count() == 3 and page.locator("#camera").is_hidden()
+            ### The camera stays open for a series of photos, until "Done"; then the sky map shows them merged.
+            for _ in range(2):
+                page.click("#camera-shoot")
+                wait_idle()
+            assert page.locator("#editor-views button").count() == 4 and page.locator("#camera").is_visible()
+            page.click("#camera-stop")
+            assert page.locator("#camera").is_hidden() and page.locator("#sky-map-photos").is_visible()
             photo_set_path = tmp_path / "photo_set.json"
             photo_set_path.write_bytes(download("#photos-save"))
             assert json.loads(photo_set_path.read_text())["kind"] == "photo_set"
@@ -370,7 +374,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             wait_idle()
             page.set_input_files("#photo-file", photo_set_path)
             wait_idle()
-            assert page.locator("#editor-views button").count() == 3
+            assert page.locator("#editor-views button").count() == 4
             page.click("#editor-close")
             page.click("#menu-button")
             project_path = tmp_path / "project.zip"
@@ -385,7 +389,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#tabs [data-tab=obstruction]")
             page.click("#sky-edit")
             wait_idle()
-            assert page.locator("#editor-views button").count() == 3
+            assert page.locator("#editor-views button").count() == 4
             page.click("#editor-close")
             ### The inputs are restored after a reload, also the photos (stored a second after the last change).
             page.wait_for_timeout(2000)
@@ -397,7 +401,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#photo summary")
             page.click("#sky-edit")
             wait_idle()
-            assert page.locator("#editor-views button").count() == 3
+            assert page.locator("#editor-views button").count() == 4
             page.click("#editor-close")
             ### "No obstruction" removes the obstructed sky description again.
             page.click("#tabs [data-tab=obstruction]")
