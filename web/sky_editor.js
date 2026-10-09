@@ -30,8 +30,9 @@ const CONTROLS_TEXT = {
 const MAX_SKY_MAP_ZOOM = 10;
 
 // Create the editor on the page's elements; `call` runs a worker action, `report` logs, `onApplied(summary)` is called
-// after the marked flags were sent to Python as the new obstructed sky description.
-export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyNodes, site, onApplied }) {
+// after the marked flags were sent to Python as the new obstructed sky description, `onPhotosChanged()` a moment after
+// photos were added, removed or aligned (to store them for the next visit).
+export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyNodes, site, onApplied, onPhotosChanged }) {
   const canvas = element("editor-canvas");
   const context = canvas.getContext("2d");
   let sky = null;                      // {nodes, triangles}
@@ -48,6 +49,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   const skyMapZoom = { factor: 1, x: 0, y: 0 };   // sky map shown at factor × size, shifted by (x, y) canvas pixels
   let markValue = 1;                   // what tapping sets: 1 marks as obstructed, 0 frees
   let viewsWhenOpened = [];            // to restore the photos on cancel
+  let photosChangedTimer = null;
   const camera = { stream: null, orientation: null, listener: null, eventName: null, projection: null, running: false, requestInFlight: false };
 
   // ---- Geometry ----
@@ -285,8 +287,16 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     draw();
   }
 
-  // Project the sky nodes into a photo (Python); repeated requests while one runs are merged into one.
+  // Report changed photos once they stop changing for a second (aligning changes them continuously).
+  function photosChanged() {
+    clearTimeout(photosChangedTimer);
+    photosChangedTimer = setTimeout(onPhotosChanged, 1000);
+  }
+
+  // Project the sky nodes into a photo (Python); repeated requests while one runs are merged into one. Called for every
+  // new or changed camera view, so it also reports changed photos.
   async function project(view) {
+    photosChanged();
     view.projectionWanted = true;
     if (view.projecting) return;
     view.projecting = true;
@@ -312,14 +322,19 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     project(view).catch(fail);
   }
 
-  // A photo (canvas, at most MAX_PHOTO_PX) with its camera view; selected for marking.
-  async function addPhoto(image, view, name, taken) {
+  // A photo view: the image as canvas (at most MAX_PHOTO_PX) with its camera view; projected when shown.
+  function makePhoto(image, view, name, taken) {
     const scale = Math.min(1, MAX_PHOTO_PX / Math.max(image.width, image.height));
     const photoCanvas = document.createElement("canvas");
     photoCanvas.width = Math.round(image.width * scale);
     photoCanvas.height = Math.round(image.height * scale);
     photoCanvas.getContext("2d").drawImage(image, 0, 0, photoCanvas.width, photoCanvas.height);
-    const photo = { kind: "photo", name, taken, image: photoCanvas, view: { ...view, width: photoCanvas.width, height: photoCanvas.height } };
+    return { kind: "photo", name, taken, image: photoCanvas, view: { ...view, width: photoCanvas.width, height: photoCanvas.height } };
+  }
+
+  // Add a photo with its camera view; selected for marking.
+  async function addPhoto(image, view, name, taken) {
+    const photo = makePhoto(image, view, name, taken);
     views.push(photo);
     select(views.length - 1);
     await project(photo);
@@ -331,6 +346,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     views.splice(current, 1);
     skyMapPhotos = null;
     select(Math.min(current, views.length - 1));
+    photosChanged();
   }
 
   // ---- Marking ----
@@ -649,6 +665,35 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     return JSON.stringify({ format_version: PHOTO_SET_FORMAT_VERSION, kind: "photo_set", photos });
   }
 
+  // The photos as JPEG bytes with their camera views, for a project (#37).
+  async function photoFiles() {
+    const toJpeg = canvas => new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Could not encode a photo as JPEG")), "image/jpeg", 0.85));
+    return Promise.all(views.filter(view => view.kind === "photo").map(async view => ({ name: view.name, taken: view.taken, view: view.view, bytes: new Uint8Array(await (await toJpeg(view.image)).arrayBuffer()) })));
+  }
+
+  // Replace all photos, e.g. by those of a loaded project ([{name, taken, view, bytes}] with JPEG bytes); they are
+  // projected when marking starts (or right away while marking).
+  async function setPhotos(photos) {
+    const loaded = [];
+    for (const { name, taken, view, bytes } of photos) {
+      const url = URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
+      try {
+        loaded.push(makePhoto(await loadImage(url), view, name, taken));
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+    views.splice(1, views.length - 1, ...loaded);
+    skyMapPhotos = null;
+    current = 0;
+    photosChanged();
+    if (isOpen()) {
+      for (const photo of loaded) await project(photo);
+      showViews();
+      draw();
+    }
+  }
+
   // ---- Opening and closing ----
 
   // (Re)start from the current obstructed sky description, e.g. after loading another one.
@@ -677,6 +722,10 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     await reload();
   }
 
+  function isOpen() {
+    return !element("editor").hidden;
+  }
+
   function close() {
     stopCamera();
     element("editor").hidden = true;
@@ -690,6 +739,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     current = 0;
     skyMapPhotos = null;
     close();
+    photosChanged();
   }
 
   async function freeAll() {
@@ -704,8 +754,8 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   element("photo-remove").addEventListener("click", removePhoto);
 
   return {
-    open, close, cancel, reload, startCamera, stopCamera, takePhoto, loadPhotoFile, photoSetText, freeAll,
-    get isOpen() { return !element("editor").hidden; },
+    open, close, cancel, reload, startCamera, stopCamera, takePhoto, loadPhotoFile, photoSetText, photoFiles, setPhotos, freeAll,
+    get isOpen() { return isOpen(); },
     get hasPhotos() { return views.some(view => view.kind === "photo"); },
   };
 }

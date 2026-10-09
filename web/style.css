@@ -1,9 +1,24 @@
 [hidden] { display: none !important; }
-body { font-family: system-ui, sans-serif; margin: 0 auto; padding: 16px; max-width: 1000px; background: #fff; color: #222; line-height: 1.4; }
-h1 { font-size: 1.5rem; margin-bottom: 0.2em; }
+body { font-family: system-ui, sans-serif; margin: 0 auto; padding: 0 16px 16px; max-width: 1000px; background: #fff; color: #222; line-height: 1.4; }
 h2 { font-size: 1.15rem; margin-top: 1.6em; }
-header p, .hint { color: #555; margin-top: 0; }
-#status { display: flex; align-items: center; gap: 8px; font-size: 0.95rem; }
+.hint { color: #555; margin-top: 0; }
+#top-bar { position: sticky; top: 0; z-index: 5; background: #fff; border-bottom: 1px solid #ddd; }
+.bar { display: flex; align-items: center; gap: 8px; padding: 8px 0 4px; }
+.bar h1 { font-size: 1.1rem; margin: 0; white-space: nowrap; }
+.bar button { padding: 6px 12px; }
+#status { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; flex: 1; min-width: 0; }
+#status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#menu { position: absolute; right: 0; top: 100%; z-index: 6; display: flex; flex-direction: column; min-width: 220px; background: #fff; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); padding: 4px 0; }
+.menu-item { display: block; width: 100%; box-sizing: border-box; text-align: left; margin: 0; padding: 10px 16px; border: none; border-radius: 0; background: none; font-size: 0.95rem; cursor: pointer; }
+.menu-item:hover { background: #f0f0f0; }
+#menu hr { width: 100%; margin: 4px 0; border: none; border-top: 1px solid #ddd; }
+#tabs { display: flex; gap: 2px; overflow-x: auto; }
+#tabs button { border: none; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 6px 10px; font-size: 0.95rem; white-space: nowrap; }
+#tabs button[aria-selected="true"] { border-bottom-color: #d95f02; font-weight: 600; }
+#top-bar .error { max-height: 25vh; overflow: auto; margin: 4px 0 6px; }
+.tab-panel { padding-top: 12px; }
+#log-details { margin-top: 2em; }
+#log-details summary { cursor: pointer; color: #555; font-size: 0.9rem; }
 #status-light { width: 14px; height: 14px; border-radius: 50%; background: #c62828; flex: none; }
 body[data-state="ready"] #status-light, body[data-state="computed"] #status-light { background: #2e7d32; }
 .error { color: #b00020; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 0.85rem; }
@@ -23,7 +38,6 @@ th, td { padding: 3px 12px 3px 0; text-align: left; border-bottom: 1px solid #ee
 td.number, th.number { text-align: right; font-variant-numeric: tabular-nums; }
 .plot { width: 100%; }
 #log { font-size: 0.75rem; max-height: 30em; overflow: auto; background: #f4f4f4; padding: 8px; }
-footer { margin-top: 2em; font-size: 0.8rem; color: #666; }
 #plot-sky_hemisphere { max-width: 640px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
 .row > label { flex: 1 1 120px; }
@@ -35,7 +49,6 @@ input.inline { display: inline-block; width: 4.5em; padding: 2px 4px; }
 label input.inline + button { display: block; margin-top: 6px; }
 button.small, label.button { padding: 5px 10px; font-size: 0.9rem; }
 label.button { display: inline-block; margin: 0; border-radius: 6px; border: 1px solid #888; background: #f4f4f4; cursor: pointer; }
-.buttons.secondary { margin-top: 0; }
 details#lidar, details#photo { margin: 8px 0; }
 details#lidar summary, details#photo summary { cursor: pointer; color: #333; }
 .overlay { position: fixed; inset: 0; z-index: 10; overflow-y: auto; background: #fff; padding: 0 16px 16px; }

@@ -1,8 +1,10 @@
 // User interface of the browser app; the computation runs in Python in a Web Worker (worker.js).
-// The page state is in document.body.dataset.state: loading, ready, busy, computed or error (used by the smoke test and
+// The page has tabs for the main steps (site and weather, obstruction, panel, results) and a menu (☰) for actions that
+// are not steps (#36); the status light stays in the top bar. Opening the results tab computes the results if they are
+// missing or out of date (inputs or form changed). The page state is in document.body.dataset.state: loading, ready, busy, computed or error (used by the smoke test and
 // the red/green status light); progress messages and timings go to the log at the bottom.
-// Loaded inputs and the form are kept in IndexedDB for the next visit; files can be saved and loaded to move them
-// between devices.
+// Loaded inputs, the photos and the form are kept in IndexedDB for the next visit (not the point cloud, which may be large); files can be saved and loaded to move them
+// between devices, one by one or all at once as a project zip (#37).
 
 import { createSkyEditor } from "./sky_editor.js";
 
@@ -11,7 +13,8 @@ const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 // Form fields stored for the next visit and filled from a loaded config.
 const FORM_FIELDS = ["site-query", "site-latitude", "site-longitude", "weather-years", "weather-source", "tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare",
   "scanner_heading_deg", "offset-east", "offset-north", "offset-up", "min_points", "n_sky_nodes", "camera_fov_deg"];
-const ENTER_COMPUTES = ["tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare"];
+// Enter in these fields opens the results tab (and so computes).
+const ENTER_SHOWS_RESULTS = ["tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare"];
 
 const pageStart = performance.now();
 const element = id => document.getElementById(id);
@@ -20,11 +23,18 @@ const pendingCalls = new Map();
 let nextCallId = 0;
 let pythonReady = false;
 // Loaded inputs as file content, kept to re-parse (weather format change), to save as files and to store for the next visit.
-const inputs = { weather: null, sky: null };        // {text, filename, source?}
+// The irradiation per sky patch is only kept to save it again, if a loaded project has it (the page computes its own).
+const inputs = { weather: null, sky: null, irradiation: null };        // {text, filename, source?}
 // Config entries without a form field, from a loaded config file; the form's entries are merged over them.
 let importedConfig = {};
 // Latest result, for inspection in the browser console and the smoke test.
 window.pvYieldApp = { lastResult: null };
+// Counts changes of the loaded inputs (weather, obstructed sky description); with the config, it tells whether the
+// latest result is up to date: results.computedKey is the key of the latest result, results.attemptedKey that of the
+// latest computation, also a failed one (not repeated until something changes). Plots computed while the results tab
+// is hidden are drawn when it is shown (hidden plots get no size).
+let inputsVersion = 0;
+const results = { computedKey: null, attemptedKey: null, pendingPlots: null };
 
 const STATE_TEXTS = { loading: "Loading Python and packages ...", ready: "Ready", busy: "Working ...", computed: "Ready", error: "Error" };
 
@@ -32,6 +42,34 @@ const STATE_TEXTS = { loading: "Loading Python and packages ...", ready: "Ready"
 function setState(state) {
   document.body.dataset.state = state;
   element("status-text").textContent = STATE_TEXTS[state];
+}
+
+// ---- Tabs and menu ----
+
+// Tab panels: the main steps (tab bar) and the about page (menu).
+const TABS = ["site", "obstruction", "panel", "results", "about"];
+
+// Show one tab panel (unknown names show the first); scrolls to the top when the tab changes. The results tab computes
+// the results if needed.
+function showTab(name) {
+  if (!TABS.includes(name)) name = TABS[0];
+  if (!element(`tab-${name}`).hidden) return;
+  for (const tab of TABS) element(`tab-${tab}`).hidden = tab !== name;
+  for (const button of document.querySelectorAll("#tabs [data-tab]")) button.setAttribute("aria-selected", String(button.dataset.tab === name));
+  window.scrollTo(0, 0);
+  updateResultsIfShown();
+}
+
+// Show a tab right away and keep it in the URL (#/name), so a reload stays on it and the back button returns to the
+// previous tab. The hash has a slash, so it never scrolls to an element with that id.
+function openTab(name) {
+  showTab(name);
+  if (location.hash !== `#/${name}`) location.hash = `/${name}`;
+}
+
+function setMenuOpen(open) {
+  element("menu").hidden = !open;
+  element("menu-button").setAttribute("aria-expanded", String(open));
 }
 
 // Add a line to the log panel.
@@ -69,7 +107,7 @@ function fail(error) {
   const message = `Error: ${error.message ?? error}`;
   report(message);
   console.error(message);
-  element("error").textContent = message;
+  element("error").textContent = `${message}\n(Details: log at the bottom of the page.)`;
   element("error").hidden = false;
   setState("error");
   updateButtons();
@@ -78,28 +116,29 @@ function fail(error) {
 // Enable the buttons that can be used in the current state.
 function updateButtons() {
   const idle = pythonReady && document.body.dataset.state !== "busy";
-  for (const id of ["site-search", "weather-download", "config-save"]) element(id).disabled = !idle;
+  for (const id of ["site-search", "weather-download", "config-save", "project-new", "project-save"]) element(id).disabled = !idle;
   element("lidar-compute").disabled = !idle || !element("lidar-file").files.length;
   element("sky-edit").disabled = !idle;
-  element("compute").disabled = !idle || !inputs.weather;
   element("weather-save").disabled = !inputs.weather;
   element("sky-save").disabled = !inputs.sky;
   element("sky-clear").disabled = !idle || !inputs.sky;
   element("export-zip").disabled = element("export-pdf").disabled = !idle || !window.pvYieldApp.lastResult;
 }
 
-// Run an action while the page is marked busy; errors are reported, not rethrown.
+// Run an action while the page is marked busy; errors are reported, not rethrown. `finalState` may be a function,
+// evaluated after the action.
 async function whileBusy(action, finalState = "ready") {
   setState("busy");
   element("error").hidden = true;
   updateButtons();
   try {
     await action();
-    setState(finalState);
+    setState(typeof finalState === "function" ? finalState() : finalState);
   } catch (error) {
     fail(error);
   }
   updateButtons();
+  updateResultsIfShown();
 }
 
 // Load a classic script (BokehJS) and resolve when it has run.
@@ -189,18 +228,26 @@ function setFormValues(values) {
 
 // ---- Config: form <-> config dict ----
 
+// A form field's label and tab, for error messages, e.g. "Area (m²)" (tab Panel).
+function fieldName(id) {
+  const label = element(id).closest("label")?.firstChild?.textContent.trim() || id;
+  const tab = element(id).closest(".tab-panel")?.id.replace("tab-", "");
+  const tabTitle = document.querySelector(`#tabs [data-tab="${tab}"]`)?.textContent;
+  return `"${label}"${tabTitle ? ` (tab ${tabTitle})` : ""}`;
+}
+
 // A number from a form field; empty gives null (e.g. "optimize" or "from the weather data").
 function numberOrNull(id) {
   const text = element(id).value.trim();
   if (text === "") return null;
   const value = Number(text);
-  if (Number.isNaN(value)) throw new Error(`Field ${id} is not a number: ${JSON.stringify(text)}`);
+  if (Number.isNaN(value)) throw new Error(`${fieldName(id)} is not a number: ${JSON.stringify(text)}`);
   return value;
 }
 
 function requiredNumber(id) {
   const value = numberOrNull(id);
-  if (value === null) throw new Error(`Field ${id} is empty`);
+  if (value === null) throw new Error(`${fieldName(id)} is empty`);
   return value;
 }
 
@@ -225,7 +272,7 @@ function mergeDeep(base, update) {
 // missing entries take the defaults of the Python functions.
 function currentConfig() {
   return mergeDeep(importedConfig, {
-    site: { latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") },
+    site: { query: element("site-query").value.trim() || null, latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") },
     weather: { source: element("weather-source").value, n_years: requiredNumber("weather-years") },
     sky_obstruction: { method: "lidar", lidar: { scanner_heading_deg: requiredNumber("scanner_heading_deg"), panel_offset_m: ["offset-east", "offset-north", "offset-up"].map(requiredNumber), min_points: requiredNumber("min_points") },
       photo: { fov_deg: requiredNumber("camera_fov_deg") } },
@@ -239,6 +286,7 @@ function currentConfig() {
 function applyConfig(config) {
   const value = (section, key) => config[section]?.[key];
   const set = (id, entry) => { element(id).value = entry ?? ""; };
+  if (value("site", "query") || value("site", "name")) set("site-query", value("site", "query") || value("site", "name"));
   set("site-latitude", value("site", "latitude"));
   set("site-longitude", value("site", "longitude"));
   if (value("weather", "source")) element("weather-source").value = value("weather", "source");
@@ -263,6 +311,7 @@ async function loadWeather(text, filename, source = "auto") {
   element("weather-summary").textContent = "loading ...";
   const summary = await call("loadWeather", text, filename, source);
   inputs.weather = { text, filename, source: summary.source };
+  inputsVersion++;
   element("weather-source").value = source;
   element("weather-summary").textContent = `${filename}: ${summary.name}, ${format(summary.latitude, 3)}° N, ${format(summary.longitude, 3)}° E, ${format(summary.altitude, 0)} m; ${summary.n_hours} hours; annual GHI ${format(summary.annual_ghi_kwh_m2, 0)}, DNI ${format(summary.annual_dni_kwh_m2, 0)}, DHI ${format(summary.annual_dhi_kwh_m2, 0)} kWh/m²`;
   report(`Weather loaded: ${filename} (${summary.source})`);
@@ -278,6 +327,7 @@ async function loadObstructedSky(text, filename) {
   element("sky-summary").textContent = "loading ...";
   showSkySummary(await call("loadObstructedSky", text, filename), filename);
   inputs.sky = { text, filename };
+  inputsVersion++;
   report(`Obstructed sky description loaded: ${filename}`);
   await remember("sky", inputs.sky);
   if (editor.isOpen) await editor.reload();
@@ -291,6 +341,7 @@ async function computeObstruction() {
   const summary = await call("computeObstruction", file, currentConfig());
   const filename = `obstructed_sky_${file.name.replace(/\.[^.]*$/, "")}.json`;
   inputs.sky = { text: await call("obstructedSkyText"), filename };
+  inputsVersion++;
   showSkySummary(summary, filename);
   report(`Obstructed sky computed from ${file.name}`);
   await remember("sky", inputs.sky);
@@ -301,13 +352,15 @@ async function computeObstruction() {
 async function skyMarked(summary) {
   const filename = `obstructed_sky_${(summary.method || "marked").replace(/\+/g, "_")}.json`;
   inputs.sky = { text: await call("obstructedSkyText"), filename };
+  inputsVersion++;
   showSkySummary(summary, filename);
   updateButtons();
   await remember("sky", inputs.sky);
 }
 
 const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => requiredNumber("camera_fov_deg"), nSkyNodes: () => requiredNumber("n_sky_nodes"),
-  site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }), onApplied: skyMarked });
+  site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }), onApplied: skyMarked,
+  onPhotosChanged: async () => remember("photos", await editor.photoFiles()) });
 
 // The site's coordinates from the form, or an error asking for them.
 function siteCoordinates() {
@@ -384,6 +437,87 @@ async function downloadWeather() {
   await loadWeather(await fetchText(candidate.url), candidate.filename, candidate.weather_source);
 }
 
+// ---- Project: all files in one zip (#37) ----
+
+// File name of a saved project: the place (first part of the address) and the date, e.g. Freiburg_im_Breisgau_2026-10-09.pvproject.zip.
+function projectFilename() {
+  const place = element("site-query").value.split(",")[0].normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+  return `${place || "pv_yield"}_${new Date().toISOString().slice(0, 10)}.pvproject.zip`;
+}
+
+// Save all inputs that are there (config, weather, obstructed sky description, photos, point cloud) as one zip, with
+// the results and the PDF report if they can be computed (computed now if out of date), so they match the inputs.
+async function saveProject() {
+  let includeResults = false;
+  if (inputs.weather) {
+    try {
+      if (!resultsUpToDate()) await compute();
+      includeResults = true;
+    } catch (error) {
+      report(`Saving the project without results, as computing them failed: ${error.message ?? error}`);
+    }
+  }
+  const project = { config: currentConfig(), weather: inputs.weather, obstructed_sky: inputs.sky, irradiation: inputs.irradiation, include_results: includeResults };
+  const pointCloud = element("lidar-file").files[0] ?? null;
+  report(`Saving the project${pointCloud ? ` with the point cloud ${pointCloud.name} (${format(pointCloud.size / 1e6, 1)} MB)` : ""} ...`);
+  saveFile(projectFilename(), await call("saveProject", project, await editor.photoFiles(), pointCloud), "application/zip");
+}
+
+// Empty the inputs and set the form to the page's defaults (also in the browser's storage), e.g. before loading a project.
+async function resetInputs() {
+  await call("reset");
+  Object.assign(inputs, { weather: null, sky: null, irradiation: null });
+  inputsVersion++;
+  importedConfig = {};
+  for (const id of FORM_FIELDS) {
+    const field = element(id);
+    field.value = field.tagName === "SELECT" ? ([...field.options].find(option => option.defaultSelected) ?? field.options[0]).value : field.defaultValue;
+  }
+  for (const id of ["weather-file", "sky-file", "lidar-file"]) element(id).value = "";
+  foundPlaces = [];
+  element("site-results-label").hidden = true;
+  element("weather-summary").textContent = "not loaded";
+  element("sky-summary").textContent = NO_SKY_SUMMARY;
+  await editor.setPhotos([]);
+  window.pvYieldApp.lastResult = null;
+  Object.assign(results, { computedKey: null, attemptedKey: null, pendingPlots: null });
+  showResultsMessage(NO_RESULTS_MESSAGE);
+  await Promise.all([remember("form", formValues()), remember("config", {}), remember("weather", null), remember("sky", null)]);
+}
+
+// Start a new project: empty inputs, the form at its defaults (also for the next visit).
+async function newProject() {
+  await resetInputs();
+  openTab("site");
+  report("New project: inputs emptied, form at its defaults");
+}
+
+// Load a project: replaces the current inputs; files missing in the project leave their inputs empty or at the
+// defaults. If the project holds results, the results tab opens and computes them again from the project's inputs.
+async function loadProject(file) {
+  if (!pythonReady) throw new Error("Python is still loading; load the project when the page is ready");
+  const project = await call("loadProject", file);
+  await resetInputs();
+  if (project.config) {
+    applyConfig(project.config);
+    await remember("config", project.config);
+  }
+  await remember("form", formValues());
+  if (project.weather) await loadWeather(project.weather.text, project.weather.filename, project.weather.source);
+  if (project.obstructed_sky) await loadObstructedSky(project.obstructed_sky.text, project.obstructed_sky.filename);
+  if (project.photos.length) await editor.setPhotos(project.photos);
+  if (project.point_cloud) {
+    // A file input can only be set through a DataTransfer; the point cloud is then used like a picked file.
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([project.point_cloud.bytes], project.point_cloud.filename));
+    element("lidar-file").files = transfer.files;
+    element("lidar").open = true;
+  }
+  if (project.irradiation) inputs.irradiation = project.irradiation;
+  report(`Project loaded: ${file.name} (saved ${project.created} with version ${project.program_version}): ${project.contents.join(", ")}`);
+  openTab(project.has_results && inputs.weather ? "results" : "site");
+}
+
 // ---- Results ----
 
 function showKeyFigures(result) {
@@ -428,32 +562,98 @@ async function showPlots(plots) {
   }
 }
 
+const NO_RESULTS_MESSAGE = "No results yet: set the site and the weather (first tab), optionally the obstruction and the panel; the results are computed when you open this tab.";
+const MISSING_WEATHER_MESSAGE = "The results need weather data: download it or load a file in the tab Site & weather.";
+
+// Instead of the results, a message (e.g. which input is missing).
+function showResultsMessage(message) {
+  element("results").hidden = true;
+  element("results-empty").textContent = message;
+  element("results-empty").hidden = false;
+}
+
+// The key of the current inputs and form; the latest result is up to date if it was computed with the same key.
+function resultsKey() {
+  return JSON.stringify([currentConfig(), inputsVersion]);
+}
+
+function resultsUpToDate() {
+  return window.pvYieldApp.lastResult !== null && resultsKey() === results.computedKey;
+}
+
+// Compute the results for the current inputs and show them (the plots once the results tab is shown).
 async function compute() {
   const config = currentConfig();
+  const key = resultsKey();
+  results.attemptedKey = key;
   report(`Computing: tilt ${config.panel.tilt_deg ?? "optimized"}°, azimuth ${config.panel.azimuth_deg ?? "optimized"}° ...`);
   await remember("form", formValues());
-  const result = await call("compute", config);
+  let result;
+  try {
+    result = await call("compute", config);
+  } catch (error) {
+    window.pvYieldApp.lastResult = null;
+    showResultsMessage("Computing the results failed: see the error at the top. They are computed again when an input changes.");
+    throw error;
+  }
   window.pvYieldApp.lastResult = result;
+  results.computedKey = key;
   element("results").hidden = false;
+  element("results-empty").hidden = true;
   showKeyFigures(result);
   showMonthly(result.monthly_daily_average);
   showOrientations(result.orientation_comparison);
-  await showPlots(result.plots);
+  results.pendingPlots = result.plots;
+  await drawPendingPlots();
   report(`Computed (${Object.entries(result.timings).map(([step, seconds]) => `${step} ${seconds.toFixed(1)} s`).join(", ")})`);
+}
+
+// Draw the plots of the latest result if the results tab is shown.
+async function drawPendingPlots() {
+  if (!results.pendingPlots || element("tab-results").hidden) return;
+  const plots = results.pendingPlots;
+  results.pendingPlots = null;
+  await showPlots(plots);
+}
+
+// While the results tab is shown and the page is idle: compute if the results are missing or out of date (once per
+// change of the inputs), or say which input is missing; draw plots computed while the tab was hidden.
+function updateResultsIfShown() {
+  if (!pythonReady || element("tab-results").hidden || document.body.dataset.state === "busy") return;
+  if (!inputs.weather) return showResultsMessage(MISSING_WEATHER_MESSAGE);
+  let key;
+  try {
+    key = resultsKey();
+  } catch (error) {
+    showResultsMessage("The results can't be computed: see the error at the top.");
+    return fail(error);
+  }
+  if (window.pvYieldApp.lastResult && key === results.computedKey) return drawPendingPlots().catch(fail);
+  if (key !== results.attemptedKey) whileBusy(compute, "computed");
 }
 
 // Restore the inputs and form of the last visit, if stored.
 async function restoreStoredInputs() {
-  const [form, weather, sky, config] = await Promise.all([recall("form"), recall("weather"), recall("sky"), recall("config")]);
+  const [form, weather, sky, config, photos] = await Promise.all([recall("form"), recall("weather"), recall("sky"), recall("config"), recall("photos")]);
   if (config) importedConfig = config;
   setFormValues(form);
   if (weather) await loadWeather(weather.text, weather.filename, weather.source ?? "auto");
   if (sky) await loadObstructedSky(sky.text, sky.filename);
-  if (form || weather || sky) report("Restored the inputs of the last visit");
+  if (photos?.length) await editor.setPhotos(photos);
+  if (form || weather || sky || photos?.length) report(`Restored the inputs of the last visit${photos?.length ? ` (${photos.length} photos)` : ""}`);
   updatePvgisLink();
 }
 
 // ---- Event handlers ----
+
+for (const button of document.querySelectorAll("[data-tab]")) button.addEventListener("click", () => openTab(button.dataset.tab));
+window.addEventListener("hashchange", () => showTab(location.hash.replace(/^#\/?/, "")));
+element("menu-button").addEventListener("click", () => setMenuOpen(element("menu").hidden));
+// A tap anywhere else closes the menu; a tap on a menu entry acts first (a file chooser opens from its label).
+document.addEventListener("click", event => {
+  if (!element("menu").hidden && !element("menu-button").contains(event.target)) setTimeout(() => setMenuOpen(false));
+});
+document.addEventListener("keydown", event => { if (event.key === "Escape") setMenuOpen(false); });
 
 for (const id of FORM_FIELDS) element(id).addEventListener("change", () => remember("form", formValues()));
 element("site-search").addEventListener("click", () => whileBusy(searchSite));
@@ -482,6 +682,7 @@ element("sky-save").addEventListener("click", () => saveFile(inputs.sky.filename
 async function clearObstructedSky() {
   await call("clearObstructedSky");
   inputs.sky = null;
+  inputsVersion++;
   element("sky-summary").textContent = NO_SKY_SUMMARY;
   element("sky-file").value = "";
   report("Obstructed sky description removed: computing without obstruction");
@@ -517,9 +718,8 @@ element("photos-save").addEventListener("click", () => {
 });
 element("editor-free").addEventListener("click", () => whileBusy(editor.freeAll));
 element("editor-close").addEventListener("click", () => editor.close());
-element("compute").addEventListener("click", () => whileBusy(compute, "computed"));
-for (const id of ENTER_COMPUTES) {
-  element(id).addEventListener("keydown", event => { if (event.key === "Enter" && !element("compute").disabled) element("compute").click(); });
+for (const id of ENTER_SHOWS_RESULTS) {
+  element(id).addEventListener("keydown", event => { if (event.key === "Enter") openTab("results"); });
 }
 element("config-save").addEventListener("click", () => whileBusy(async () => saveFile("pv_yield_config.yaml", await call("configYaml", currentConfig()), "text/yaml")));
 element("config-file").addEventListener("change", async event => {
@@ -533,13 +733,18 @@ element("config-file").addEventListener("change", async event => {
   });
   event.target.value = "";
 });
-element("forget").addEventListener("click", () => whileBusy(async () => {
-  await storeRequest("readwrite", store => store.clear());
-  report("Forgot the stored inputs; they stay loaded until the page is reloaded");
-}));
+const readyOrComputed = () => window.pvYieldApp.lastResult ? "computed" : "ready";
+element("project-new").addEventListener("click", () => whileBusy(newProject, readyOrComputed));
+element("project-save").addEventListener("click", () => whileBusy(saveProject, readyOrComputed));
+element("project-file").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (file) await whileBusy(() => loadProject(file), readyOrComputed);
+  event.target.value = "";
+});
 element("export-zip").addEventListener("click", () => whileBusy(async () => saveFile("pv_yield_results.zip", await call("exportZip"), "application/zip"), "computed"));
 element("export-pdf").addEventListener("click", () => whileBusy(async () => saveFile("pv_yield_report.pdf", await call("pdfReport"), "application/pdf"), "computed"));
 
+showTab(location.hash.replace(/^#\/?/, ""));
 try {
   updateButtons();
   const versions = await call("init");
@@ -549,7 +754,7 @@ try {
   await loadScript(`https://cdn.bokeh.org/bokeh/release/bokeh-${versions.bokeh}.min.js`);
   pythonReady = true;
   await whileBusy(restoreStoredInputs);
-  if (document.body.dataset.state === "ready") report("Ready: set the site and load or download weather data, optionally load or compute an obstructed sky description, then compute");
+  if (document.body.dataset.state === "ready") report("Ready: set the site and load or download weather data, optionally load or compute an obstructed sky description, then open the results");
 } catch (error) {
   fail(error);
 }

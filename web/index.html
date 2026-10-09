@@ -8,19 +8,35 @@
 <script type="module" src="app.js"></script>
 </head>
 <body data-state="loading">
-<header>
-  <h1>PV yield estimator</h1>
-  <p>Photovoltaic yield from weather data and an obstructed sky description; all computation runs in your browser (Python via Pyodide). Only the site search and the weather download contact other services.</p>
+<!-- Top bar (sticky): status light, the menu (☰) and the tabs of the main steps (#36); opening Results computes. -->
+<header id="top-bar">
+  <div class="bar">
+    <h1>PV yield</h1>
+    <div id="status" aria-live="polite"><span id="status-light"></span><span id="status-text">Loading Python and packages ...</span></div>
+    <button id="menu-button" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="menu">☰</button>
+  </div>
+  <nav id="menu" hidden>
+    <button id="project-new" class="menu-item" disabled>New project</button>
+    <label class="menu-item">Load project (zip) <input type="file" id="project-file" hidden></label>
+    <button id="project-save" class="menu-item" disabled>Save project (zip)</button>
+    <hr>
+    <button id="config-save" class="menu-item" disabled>Save config (YAML)</button>
+    <label class="menu-item">Load config (YAML) <input type="file" id="config-file" hidden></label>
+    <hr>
+    <button class="menu-item" data-tab="about">About</button>
+  </nav>
+  <nav id="tabs" role="tablist">
+    <button role="tab" data-tab="site">Site &amp; weather</button>
+    <button role="tab" data-tab="obstruction">Obstruction</button>
+    <button role="tab" data-tab="panel">Panel</button>
+    <button role="tab" data-tab="results">Results</button>
+  </nav>
+  <div id="error" class="error" hidden></div>
 </header>
 
-<section id="status-section">
-  <div id="status" aria-live="polite"><span id="status-light"></span><span id="status-text">Loading Python and packages ...</span></div>
-  <div id="error" class="error" hidden></div>
-</section>
-
-<section>
-  <h2>Inputs</h2>
+<main>
   <!-- The file inputs have no accept filter: Android greys out CSV and YAML files for such filters (it matches file types, not names); the formats are detected from the content. -->
+<section id="tab-site" class="tab-panel" hidden>
   <div class="inputs">
     <fieldset>
       <legend>Site</legend>
@@ -53,6 +69,11 @@
       <div class="summary" id="weather-summary">not loaded</div>
       <button id="weather-save" class="small" disabled>Save weather file</button>
     </fieldset>
+  </div>
+</section>
+
+<section id="tab-obstruction" class="tab-panel" hidden>
+  <div class="inputs">
     <fieldset>
       <legend>Obstructed sky description (optional)</legend>
       <label>JSON file (from the CLI or saved here) <input type="file" id="sky-file"></label>
@@ -86,6 +107,11 @@
         <button id="sky-clear" class="small" disabled>No obstruction</button>
       </div>
     </fieldset>
+  </div>
+</section>
+
+<section id="tab-panel" class="tab-panel" hidden>
+  <div class="inputs">
     <fieldset>
       <legend>Panel</legend>
       <div class="row">
@@ -99,15 +125,7 @@
       <label>Compare orientations (tilt/azimuth, comma-separated) <input type="text" id="compare" value="30/180, 30/90, 30/270, 90/180" placeholder="e.g. 30/180, 90/180"></label>
     </fieldset>
   </div>
-  <div class="buttons">
-    <button id="compute" class="primary" disabled>Compute</button>
-  </div>
-  <div class="buttons secondary">
-    <button id="config-save" class="small" disabled>Save config (YAML)</button>
-    <label class="button small">Load config (YAML) <input type="file" id="config-file" hidden></label>
-    <button id="forget" class="small">Forget stored inputs</button>
-  </div>
-  <p class="hint">Loaded inputs are kept in this browser for your next visit. To move them to another device, save them as files (buttons above) and load them there.</p>
+  <p class="hint">The results are computed from the inputs of all tabs when you open the tab Results (Enter in a panel field opens it).</p>
 </section>
 
 <!-- Full-screen layer over the page; "Done" returns to the page where it was. -->
@@ -154,12 +172,14 @@
   <button id="camera-shoot" aria-label="Take photo"></button>
 </div>
 
-<section id="results" hidden>
+<section id="tab-results" class="tab-panel" hidden>
+  <p class="hint" id="results-empty">No results yet: set the site and the weather (first tab), optionally the obstruction and the panel; the results are computed when you open this tab.</p>
+  <div id="results" hidden>
   <h2>Key figures</h2>
   <div class="table-wrap"><table id="key-figures"></table></div>
   <div class="buttons">
     <button id="export-zip" class="small">Download results (zip: JSON, YAML, CSV)</button>
-    <button id="export-pdf" class="small">Download PDF report</button>
+    <button id="export-pdf" class="small">Create report (PDF)</button>
   </div>
   <h2>Average daily values per month</h2>
   <div class="table-wrap"><table id="monthly"></table></div>
@@ -181,19 +201,24 @@
   <h2>Panel orientation</h2>
   <p class="hint">Annual radiation on the panel over azimuth and tilt, unobstructed and obstructed; star: best orientation, circle: the panel's; dotted lines enclose 95 % and 90 % of the best.</p>
   <div id="plot-orientation" class="plot"></div>
+  </div>
 </section>
 
-<section>
-  <details>
-    <summary>Log (loading steps, timings, Python output)</summary>
-    <pre id="log"></pre>
-  </details>
-</section>
-
-<footer>
+<section id="tab-about" class="tab-panel" hidden>
+  <h2>PV yield estimator</h2>
+  <p>Photovoltaic yield from weather data and an obstructed sky description; all computation runs in your browser (Python via Pyodide). Only the site search and the weather download contact other services.</p>
+  <p>Steps: set the site and the weather (<em>Site &amp; weather</em>), optionally describe the obstructed sky from a LiDAR scan, photos or a sky map (<em>Obstruction</em>), set the panel (<em>Panel</em>), then open the <em>Results</em>: they are computed when needed.</p>
+  <p>Loaded inputs and the form are kept in this browser for your next visit, including the photos (not a LiDAR point cloud, which may be large). To keep everything or move it to another device, save the project (menu ☰: one zip with all inputs and the matching results) and load it there; single files (weather, obstructed sky description, photos, config) can be saved and loaded as well.</p>
   <p>Source code and CLI: <a href="https://github.com/laggondo/pv_yield">github.com/laggondo/pv_yield</a>.
     Sample weather data: PVGIS © European Union, 2001–2026. Downloaded weather data: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (CC BY 4.0).
     The first visit downloads about 60 MB (Pyodide, pvlib, pandas, bokeh), later visits use the browser cache.</p>
-</footer>
+</section>
+
+<!-- The log below every tab, collapsed. -->
+<details id="log-details">
+  <summary>Log (loading steps, timings, Python output)</summary>
+  <pre id="log"></pre>
+</details>
+</main>
 </body>
 </html>
