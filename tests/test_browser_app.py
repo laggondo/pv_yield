@@ -395,6 +395,12 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.click("#sky-clear")
             wait_idle()
             assert "no obstruction" in page.text_content("#sky-summary") and page.is_disabled("#sky-save")
+            ### New project (after the confirmation): inputs emptied, the form at its defaults, back on the first tab.
+            page.click("#menu-button")
+            page.once("dialog", lambda dialog: dialog.accept())
+            page.click("#project-new")
+            wait_idle()
+            assert page.text_content("#weather-summary") == "not loaded" and page.input_value("#scanner_heading_deg") == "0" and page.locator("#tab-site").is_visible() and page.is_disabled("#compute")
         finally:
             print("\n".join(messages))
             browser.close()

@@ -106,7 +106,7 @@ function fail(error) {
 // Enable the buttons that can be used in the current state.
 function updateButtons() {
   const idle = pythonReady && document.body.dataset.state !== "busy";
-  for (const id of ["site-search", "weather-download", "config-save", "project-save"]) element(id).disabled = !idle;
+  for (const id of ["site-search", "weather-download", "config-save", "project-new", "project-save"]) element(id).disabled = !idle;
   element("lidar-compute").disabled = !idle || !element("lidar-file").files.length;
   element("sky-edit").disabled = !idle;
   element("compute").disabled = !idle || !inputs.weather;
@@ -452,12 +452,25 @@ async function resetInputs() {
   await Promise.all([remember("form", formValues()), remember("config", {}), remember("weather", null), remember("sky", null)]);
 }
 
+// Whether replacing the current inputs is fine: true without inputs, else the user's answer to `question`.
+function confirmReplacingInputs(question) {
+  const hasInputs = inputs.weather || inputs.sky || editor.hasPhotos || element("lidar-file").files.length;
+  return !hasInputs || confirm(`${question} It replaces the current inputs; save the project first to keep them.`);
+}
+
+// Start a new project: empty inputs, the form at its defaults (also for the next visit).
+async function newProject() {
+  if (!confirmReplacingInputs("Start a new project?")) return report("New project cancelled");
+  await resetInputs();
+  openTab("site");
+  report("New project: inputs emptied, form at its defaults");
+}
+
 // Load a project: replaces the current inputs (after a confirmation if there are any); files missing in the project
 // leave their inputs empty or at the defaults. If the project holds results, they are computed again from its inputs.
 async function loadProject(file) {
   if (!pythonReady) throw new Error("Python is still loading; load the project when the page is ready");
-  const hasInputs = inputs.weather || inputs.sky || editor.hasPhotos || element("lidar-file").files.length;
-  if (hasInputs && !confirm(`Load the project ${file.name}? It replaces the current inputs.`)) return report("Loading the project cancelled");
+  if (!confirmReplacingInputs(`Load the project ${file.name}?`)) return report("Loading the project cancelled");
   const project = await call("loadProject", file);
   await resetInputs();
   if (project.config) {
@@ -643,6 +656,7 @@ element("config-file").addEventListener("change", async event => {
   event.target.value = "";
 });
 const readyOrComputed = () => window.pvYieldApp.lastResult ? "computed" : "ready";
+element("project-new").addEventListener("click", () => whileBusy(newProject, readyOrComputed));
 element("project-save").addEventListener("click", () => whileBusy(saveProject, readyOrComputed));
 element("project-file").addEventListener("change", async event => {
   const file = event.target.files[0];

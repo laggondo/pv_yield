@@ -17,11 +17,14 @@
     <button id="menu-button" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="menu">☰</button>
   </div>
   <nav id="menu" hidden>
-    <button id="project-save" class="menu-item" disabled>Save project (zip)</button>
+    <button id="project-new" class="menu-item" disabled>New project</button>
     <label class="menu-item">Load project (zip) <input type="file" id="project-file" hidden></label>
+    <button id="project-save" class="menu-item" disabled>Save project (zip)</button>
+    <hr>
     <button id="config-save" class="menu-item" disabled>Save config (YAML)</button>
     <label class="menu-item">Load config (YAML) <input type="file" id="config-file" hidden></label>
     <button id="forget" class="menu-item">Forget stored inputs</button>
+    <hr>
     <button class="menu-item" data-tab="log">Log</button>
     <button class="menu-item" data-tab="about">About</button>
   </nav>

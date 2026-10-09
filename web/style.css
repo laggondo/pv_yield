@@ -11,6 +11,7 @@ h2 { font-size: 1.15rem; margin-top: 1.6em; }
 #menu { position: absolute; right: 0; top: 100%; z-index: 6; display: flex; flex-direction: column; min-width: 220px; background: #fff; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); padding: 4px 0; }
 .menu-item { display: block; width: 100%; box-sizing: border-box; text-align: left; margin: 0; padding: 10px 16px; border: none; border-radius: 0; background: none; font-size: 0.95rem; cursor: pointer; }
 .menu-item:hover { background: #f0f0f0; }
+#menu hr { width: 100%; margin: 4px 0; border: none; border-top: 1px solid #ddd; }
 #tabs { display: flex; gap: 2px; overflow-x: auto; }
 #tabs button { border: none; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 6px 10px; font-size: 0.95rem; white-space: nowrap; }
 #tabs button[aria-selected="true"] { border-bottom-color: #d95f02; font-weight: 600; }
