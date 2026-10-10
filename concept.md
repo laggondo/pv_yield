@@ -21,7 +21,7 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
 - Parts of the method may use the phone's camera, GPS, accelerometer, gyroscope and compass.
 - Parts of the method are well suited for touch screens.
 - The pipeline runs in separate steps, not necessarily in one go. Intermediate results are stored on the device as files (JSON for data, YAML for configs) that can be transferred to other devices, e.g. measure on the phone, analyze on the computer. Offline use is not a priority, but stored results allow some steps to run offline.
-- A project bundles all files of a site in one zip (`project.yaml` with the contents, config, weather, obstructed sky description, photos, point cloud, results and report; #37), to move everything between devices in one go.
+- A project bundles all files of a site in one zip (`project.yaml` with the contents, config, weather, obstructed sky description, photos, AR recording, point cloud, results and report; #37), to move everything between devices in one go.
 
 ## Inputs
 
@@ -34,6 +34,7 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
   - Scanner alignment relative to geographic north (yaw angle), entered manually.
   - Local panel offset: position of the panel relative to the scanner.
 - **Sky obstruction, photo-based (alternative):** photos of the sky, plus metadata per photo: viewing direction (compass heading, and tilt from accelerometer/gyroscope), camera field of view, GPS position and timestamp.
+- **Sky obstruction, AR video (alternative, #46):** a short video recorded on the phone while moving it around, e.g. along a balcony, with the camera poses from ARCore (Chrome on Android; no iPhones): keyframes with camera images, camera positions in metres and orientations, projection matrices and compass readings; GPS at the start. The recording starts at a reference position chosen by the user (e.g. a corner of the balcony), the origin of the later point cloud.
 - **PV panel parameters:** area, efficiency, performance ratio, etc.
 
 Not considered for now: radiation reflected from the ground.
@@ -94,6 +95,16 @@ The obstructed sky description is the fundamental intermediate result:
 - No offset between camera and panel (#11): the photo is taken from the panel position, and the page says so. Estimating distances (entered per obstruction, or from two photos) may follow later.
 - Automatic sky detection may follow later.
 
+**AR video method** (#46; recording in bundle 7, #47; point cloud and obstruction follow in #48, #49): conventional triangulation, no AI.
+
+- Why: the LiDAR scanner needs a computer, Ethernet and its own power supply, the photo method gives no distances. Triangulating features seen in many frames from different positions (structure from motion) gives a point cloud, so the obstruction can be computed for any panel position, like with LiDAR. A few metres of movement suffice: with ~3 m baseline, an obstruction 30 m away is located to roughly ±0.5–2 m, and the direction error at the panel stays below a sky patch. Turning on the spot gives no depth: the phone must be moved sideways, and up and down for horizontal edges.
+- Camera poses from ARCore via WebXR (`immersive-ar` session with `camera-access` and `dom-overlay`, reference space `local`): ARCore fuses camera and motion sensors and gives each frame's camera position in metres and its orientation, with y up and the origin at the start pose (the reference position). Scale, up and the camera path come for free; what remains is matching and triangulating features (#48) and turning the result to north.
+- Recording (`web/ar_recording.js`): keyframes by movement (> 5 cm or > 5° since the last one, at most 4 per second, up to 300), each with the camera image (read back from WebGL, JPEG), pose, projection matrix (gives the field of view), tracking state and the latest compass reading; GPS at the start (sets an empty site, a note if it is far from the site; not used within the point cloud, as it is off by metres near buildings).
+- North: the AR coordinates differ from the earth's by a turn about the vertical, the heading offset (the compass direction the camera faced at the start). It is estimated as the robust mean of compass minus AR heading over the frames (else from the compass readings just before and after the session) and can be corrected by hand (`core/ar_recording.py`).
+- The frames have known orientations, so the sky map shows them merged like the photos (inspection now; later the background for marking by hand what the point cloud misses, e.g. distant mountains). No terrain data.
+- Stored in the project zip as `recording.json` (format version, GPS, reference note, heading offset, diagnostics, one entry per frame) plus `recording/frame_<n>.jpg`; kept in the browser like the photos. Everything runs on the phone; the CLI will process the same recordings (#48).
+- Real recordings show the user's home and stay private (never in this repository, issues or pull requests); tests use synthetic recordings.
+
 **Combining methods** (#12): a loaded or computed obstructed sky description (e.g. from LiDAR) is the start state of the manual marking, so a LiDAR result can be corrected on photos or on the sky map. The edits are baked into the flags (no separate layer; the file format stays the same). The metadata keeps the original entries and records the contributing methods in order (`methods`, e.g. `[lidar, photo]`, joined as `method: lidar+photo`) and one entry per editing session under `edits` (date, methods, number of changed patches, the photos' camera views).
 
 ### Irradiation and yield
@@ -124,7 +135,7 @@ Brings in the sun position over the year and the weather data, and produces the 
 
 - Object-oriented implementation. Where several methods produce the same result (sky obstruction, weather data source), they share a common interface, so further methods can be added easily.
 - Reimplement rather than import modules from `legacy_code/`.
-- First version: only the LiDAR method for the obstructed sky description; the photo method followed in bundle 5.
+- First version: only the LiDAR method for the obstructed sky description; the photo method followed in bundle 5, the AR video method starts in bundle 7.
 - One internal config dict holds all user choices and parameters; it can be exported to and imported from YAML.
 - Core functionality and algorithms live in a library (a Python package within this repository), used by all front ends: the browser app and a command-line app (CLI) for the computer, which suits the LiDAR processing. The core does no user interaction and no file access: it takes data and returns results. User interface and file handling stay in the front ends; plotting is a separate part of the library, so both front ends share the same plots.
 - Browser front end: plain HTML/JavaScript for the user interface, with the Python library running underneath via Pyodide. This gives full control over touch input, camera and sensors, which the photo method needs. Python runs in a Web Worker so the page stays responsive, the Pyodide version is pinned, and each page loads only the packages it needs. The first-visit download (~30 MB for pvlib on top of Pyodide, then cached by the browser) is acceptable.
