@@ -7,6 +7,7 @@
 // between devices, one by one or all at once as a project zip (#37).
 
 import { createSkyEditor } from "./sky_editor.js";
+import { createPanelMap } from "./panel_map.js";
 
 const NO_SKY_SUMMARY = "none: no obstruction (free sky)";
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -14,7 +15,7 @@ const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 const FORM_FIELDS = ["site-query", "site-latitude", "site-longitude", "weather-years", "weather-source", "tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare",
   "scanner_heading_deg", "offset-east", "offset-north", "offset-up", "min_points", "n_sky_nodes", "camera_fov_deg"];
 // Enter in these fields opens the results tab (and so computes).
-const ENTER_SHOWS_RESULTS = ["tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare"];
+const ENTER_SHOWS_RESULTS = ["tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio"];
 
 const pageStart = performance.now();
 const element = id => document.getElementById(id);
@@ -25,6 +26,8 @@ let pythonReady = false;
 // Loaded inputs as file content, kept to re-parse (weather format change), to save as files and to store for the next visit.
 // The irradiation per sky patch is only kept to save it again, if a loaded project has it (the page computes its own).
 const inputs = { weather: null, sky: null, irradiation: null };        // {text, filename, source?}
+// The loaded weather data's coordinates ({latitude, longitude}), where the panel map starts without a site.
+let weatherSite = null;
 // Config entries without a form field, from a loaded config file; the form's entries are merged over them.
 let importedConfig = {};
 // Latest result, for inspection in the browser console and the smoke test.
@@ -59,6 +62,7 @@ function showTab(name) {
   window.scrollTo(0, 0);
   // Drawn while hidden, the sky map and photo get line widths for the wrong size.
   if (name === "obstruction") editor.redraw();
+  if (name === "panel") panelMap.show().catch(fail);
   updateResultsIfShown();
 }
 
@@ -143,6 +147,8 @@ async function whileBusy(action, finalState = "ready") {
   }
   updateButtons();
   updateResultsIfShown();
+  // Inputs that move the panel map (site, weather, config, project) may have changed.
+  if (!element("tab-panel").hidden) panelMap.show().catch(fail);
 }
 
 // Load a classic script (BokehJS) and resolve when it has run.
@@ -228,13 +234,14 @@ function formValues() {
 
 function setFormValues(values) {
   for (const [id, value] of Object.entries(values ?? {})) if (FORM_FIELDS.includes(id) && value !== undefined && value !== null) element(id).value = value;
+  renderCompareRows();
 }
 
 // ---- Config: form <-> config dict ----
 
 // A form field's label and tab, for error messages, e.g. "Area (m²)" (tab Panel).
 function fieldName(id) {
-  const label = element(id).closest("label")?.firstChild?.textContent.trim() || id;
+  const label = element(id).closest("label")?.firstChild?.textContent.trim() || element(id).getAttribute("aria-label") || id;
   const tab = element(id).closest(".tab-panel")?.id.replace("tab-", "");
   const tabTitle = document.querySelector(`#tabs [data-tab="${tab}"]`)?.textContent;
   return `"${label}"${tabTitle ? ` (tab ${tabTitle})` : ""}`;
@@ -258,10 +265,37 @@ function requiredNumber(id) {
 // "30/180, 90/180" -> [[30, 180], [90, 180]].
 function parseCompare(text) {
   return text.split(/[,;]/).map(entry => entry.trim()).filter(Boolean).map(entry => {
-    const parts = entry.split("/").map(Number);
-    if (parts.length !== 2 || parts.some(Number.isNaN)) throw new Error(`Orientation to compare must be tilt/azimuth, e.g. 30/180; got ${JSON.stringify(entry)}`);
-    return parts;
+    const parts = entry.split("/").map(part => part.trim());
+    if (parts.length !== 2 || parts.some(part => part === "" || Number.isNaN(Number(part)))) throw new Error(`An orientation to compare (tab Panel) needs tilt and azimuth as numbers; got ${JSON.stringify(entry)}`);
+    return parts.map(Number);
   });
+}
+
+// The orientations to compare as rows (tilt, azimuth, remove button) below the panel's orientation; the hidden field
+// "compare" keeps them as text ("30/180, 90/180") for the config and the next visit. Rows with both entries empty are left out.
+function renderCompareRows() {
+  const pairs = element("compare").value.split(/[,;]/).map(entry => entry.trim()).filter(Boolean).map(entry => entry.split("/").map(part => part.trim()));
+  element("compare-rows").replaceChildren(...pairs.flatMap(([tilt, azimuth]) => compareRow(tilt ?? "", azimuth ?? "")));
+}
+
+function compareRow(tilt = "", azimuth = "") {
+  const title = Object.assign(document.createElement("span"), { className: "row-title", textContent: "Compare" });
+  const input = (value, label) => Object.assign(document.createElement("input"), { type: "number", step: "any", value, className: "compare-entry", ariaLabel: `Compare: ${label}` });
+  const remove = Object.assign(document.createElement("button"), { className: "small remove", textContent: "×", ariaLabel: "Remove this orientation" });
+  const cells = [title, input(tilt, "tilt (°)"), input(azimuth, "azimuth (°)"), remove];
+  remove.addEventListener("click", () => {
+    cells.forEach(cell => cell.remove());
+    storeCompareRows();
+  });
+  return cells;
+}
+
+function storeCompareRows() {
+  const entries = [...element("compare-rows").querySelectorAll("input")].map(input => input.value.trim());
+  const pairs = [];
+  for (let index = 0; index < entries.length; index += 2) if (entries[index] !== "" || entries[index + 1] !== "") pairs.push(`${entries[index]}/${entries[index + 1]}`);
+  element("compare").value = pairs.join(", ");
+  remember("form", formValues());
 }
 
 function mergeDeep(base, update) {
@@ -298,6 +332,7 @@ function applyConfig(config) {
   for (const key of ["tilt_deg", "azimuth_deg"]) set(key, value("panel", key));
   for (const key of ["area_m2", "efficiency", "performance_ratio"]) if (value("panel", key) !== undefined) set(key, value("panel", key));
   if (value("orientation", "compare")) set("compare", value("orientation", "compare").map(pair => pair.join("/")).join(", "));
+  renderCompareRows();
   const lidar = config.sky_obstruction?.lidar ?? {};
   if (lidar.scanner_heading_deg !== undefined) set("scanner_heading_deg", lidar.scanner_heading_deg);
   if (lidar.panel_offset_m) ["offset-east", "offset-north", "offset-up"].forEach((id, index) => set(id, lidar.panel_offset_m[index]));
@@ -315,6 +350,7 @@ async function loadWeather(text, filename, source = "auto") {
   element("weather-summary").textContent = "loading ...";
   const summary = await call("loadWeather", text, filename, source);
   inputs.weather = { text, filename, source: summary.source };
+  weatherSite = { latitude: summary.latitude, longitude: summary.longitude };
   inputsVersion++;
   element("weather-source").value = source;
   element("weather-summary").textContent = `${filename}: ${summary.name}, ${format(summary.latitude, 3)}° N, ${format(summary.longitude, 3)}° E, ${format(summary.altitude, 0)} m; ${summary.n_hours} hours; annual GHI ${format(summary.annual_ghi_kwh_m2, 0)}, DNI ${format(summary.annual_dni_kwh_m2, 0)}, DHI ${format(summary.annual_dhi_kwh_m2, 0)} kWh/m²`;
@@ -369,6 +405,31 @@ async function skyMarked(summary) {
 const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => requiredNumber("camera_fov_deg"), nSkyNodes: () => requiredNumber("n_sky_nodes"),
   site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }), onApplied: skyMarked,
   onPhotosChanged: async () => remember("photos", await editor.photoFiles()) });
+
+// The panel map (#38) is centred on the site (form, else the weather data's coordinates); panning it sets the site. The
+// place name (reverse search) and the sun paths of the sky editor follow once the map rests for a moment.
+let siteMovedTimer = null;
+const panelMap = createPanelMap({ element, report,
+  position: () => {
+    const site = { latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") };
+    return [site, weatherSite].find(position => position && position.latitude !== null && position.longitude !== null) ?? null;
+  },
+  azimuth: () => numberOrNull("azimuth_deg"),
+  onAzimuth: degrees => {
+    element("azimuth_deg").value = degrees;
+    remember("form", formValues());
+  },
+  onPosition: (latitude, longitude) => {
+    element("site-latitude").value = latitude.toFixed(5);
+    element("site-longitude").value = longitude.toFixed(5);
+    updatePvgisLink().catch(fail);
+    remember("form", formValues());
+    clearTimeout(siteMovedTimer);
+    siteMovedTimer = setTimeout(() => {
+      describeSite();
+      if (editor.isStarted) editor.reload().catch(fail);
+    }, 1500);
+  } });
 
 // The site's coordinates from the form, or an error asking for them.
 function siteCoordinates() {
@@ -476,12 +537,14 @@ async function saveProject() {
 async function resetInputs() {
   await call("reset");
   Object.assign(inputs, { weather: null, sky: null, irradiation: null });
+  weatherSite = null;
   inputsVersion++;
   importedConfig = {};
   for (const id of FORM_FIELDS) {
     const field = element(id);
     field.value = field.tagName === "SELECT" ? ([...field.options].find(option => option.defaultSelected) ?? field.options[0]).value : field.defaultValue;
   }
+  renderCompareRows();
   for (const id of ["weather-file", "sky-file", "lidar-file"]) element(id).value = "";
   foundPlaces = [];
   element("site-results-label").hidden = true;
@@ -730,6 +793,14 @@ element("photos-save").addEventListener("click", () => {
   if (editor.hasPhotos) saveFile("pv_yield_photos.json", editor.photoSetText(), "application/json");
   else report("No photos to save");
 });
+element("azimuth_deg").addEventListener("input", () => panelMap.drawAzimuth());
+element("compare-rows").addEventListener("input", storeCompareRows);
+element("compare-rows").addEventListener("keydown", event => { if (event.key === "Enter" && event.target.tagName === "INPUT") openTab("results"); });
+element("compare-add").addEventListener("click", () => {
+  const cells = compareRow();
+  element("compare-rows").append(...cells);
+  cells[1].focus();
+});
 for (const id of ENTER_SHOWS_RESULTS) {
   element(id).addEventListener("keydown", event => { if (event.key === "Enter") openTab("results"); });
 }
@@ -756,6 +827,7 @@ element("project-file").addEventListener("change", async event => {
 element("export-zip").addEventListener("click", () => whileBusy(async () => saveFile("pv_yield_results.zip", await call("exportZip"), "application/zip"), "computed"));
 element("export-pdf").addEventListener("click", () => whileBusy(async () => saveFile("pv_yield_report.pdf", await call("pdfReport"), "application/pdf"), "computed"));
 
+renderCompareRows();
 showTab(location.hash.replace(/^#\/?/, ""));
 try {
   updateButtons();

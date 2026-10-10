@@ -142,19 +142,30 @@
 <section id="tab-panel" class="tab-panel" hidden>
   <div class="inputs">
     <fieldset>
-      <legend>Panel</legend>
-      <div class="row">
-        <label>Tilt (°, 0 = horizontal) <input type="number" id="tilt_deg" value="15" min="0" max="90" step="any" placeholder="optimize"></label>
-        <label>Azimuth (°, compass: 180 = south) <input type="number" id="azimuth_deg" value="180" min="0" max="360" step="any" placeholder="optimize"></label>
+      <legend>Orientation</legend>
+      <p class="hint">Pan the map to place the panel (this sets the site), drag the round handle to turn it.</p>
+      <div class="panel-map-wrap" hidden><div id="panel-map"></div></div>
+            <p class="summary" id="panel-map-note" hidden></p>
+      <div class="orientation-rows">
+        <span></span><span class="column-title">Tilt (°)</span><span class="column-title">Azimuth (°)</span><span></span>
+        <span class="row-title">Panel</span>
+        <input type="number" id="tilt_deg" value="15" min="0" max="90" step="any" placeholder="optimize" aria-label="Tilt (°)">
+        <input type="number" id="azimuth_deg" value="180" min="0" max="360" step="any" placeholder="optimize" aria-label="Azimuth (°)">
+        <span></span>
       </div>
-      <div class="summary">Leave tilt or azimuth empty to find the best one for the obstructed sky.</div>
+      <div class="orientation-rows" id="compare-rows"></div>
+      <button id="compare-add" class="small" aria-label="Add an orientation to compare">+ Compare</button>
+      <input type="text" id="compare" value="" hidden>
+      <div class="summary">Tilt 0 = horizontal; azimuth on the compass, 180 = south. Empty: optimized.</div>
+    </fieldset>
+    <fieldset>
+      <legend>Panel</legend>
       <label>Area (m²) <input type="number" id="area_m2" value="1" min="0" step="any"></label>
       <label>Efficiency <input type="number" id="efficiency" value="0.20" min="0" max="1" step="any"></label>
       <label>Performance ratio <input type="number" id="performance_ratio" value="0.80" min="0" max="1" step="any"></label>
-      <label>Compare orientations (tilt/azimuth, comma-separated) <input type="text" id="compare" value="30/180, 30/90, 30/270, 90/180" placeholder="e.g. 30/180, 90/180"></label>
     </fieldset>
   </div>
-  <p class="hint">The results are computed from the inputs of all tabs when you open the tab Results (Enter in a panel field opens it).</p>
+  <p class="hint">The results are computed when you open the tab Results (Enter in a panel field opens it).</p>
 </section>
 
 <!-- Full-screen camera with the sky patches over the live image; stays open for a series of photos until "Done". -->
@@ -202,7 +213,7 @@
 
 <section id="tab-about" class="tab-panel" hidden>
   <h2>PV yield estimator</h2>
-  <p>Photovoltaic yield from weather data and an obstructed sky description; all computation runs in your browser (Python via Pyodide). Only the site search and the weather download contact other services.</p>
+  <p>Photovoltaic yield from weather data and an obstructed sky description; all computation runs in your browser (Python via Pyodide). Only the site search, the weather download and the panel map contact other services.</p>
   <p>Steps: set the site and the weather (<em>Site &amp; weather</em>), optionally describe the obstructed sky from a LiDAR scan, photos or a sky map (<em>Obstruction</em>), set the panel (<em>Panel</em>), then open the <em>Results</em>: they are computed when needed.</p>
   <p>Loaded inputs and the form are kept in this browser for your next visit, including the photos (not a LiDAR point cloud, which may be large). To keep everything or move it to another device, save the project (menu ☰: one zip with all inputs and the matching results) and load it there; single files (weather, obstructed sky description, photos, config) can be saved and loaded as well.</p>
   <p>Source code and CLI: <a href="https://github.com/laggondo/pv_yield">github.com/laggondo/pv_yield</a>.
