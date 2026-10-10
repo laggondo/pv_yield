@@ -22,6 +22,8 @@ panel:
   area_m2: 1.0
   efficiency: 0.20
   performance_ratio: 0.80
+  map_latitude: null                ### browser app: the panel's position on the map (only for placing it, the computation uses the site);
+  map_longitude: null               ### null: at the site
 orientation:
   tilt_step_deg: 1                  ### grid of the orientation comparison
   azimuth_step_deg: 2

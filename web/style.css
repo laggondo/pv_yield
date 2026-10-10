@@ -76,3 +76,14 @@ details[name="sky-source"][open] summary { font-weight: 600; }
 button.selected { background: #333; border-color: #333; color: #fff; }
 caption { text-align: left; font-size: 0.9rem; color: #444; padding-bottom: 4px; }
 #plot-daily_bars, #plot-orientation { max-width: 1000px; }
+.panel-map-wrap { position: relative; margin: 8px 0; }
+#panel-map { height: 360px; max-height: 60vh; border-radius: 6px; }
+.panel-map-overlay { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 450; pointer-events: none; overflow: visible; }
+.panel-map-overlay .panel { fill: rgba(255, 193, 7, 0.45); stroke: #ffc107; stroke-width: 2; }
+.panel-map-overlay .facing-edge { stroke: #ffc107; stroke-width: 5; }
+.panel-map-overlay .direction { stroke: #fff; stroke-width: 2; stroke-dasharray: 6 4; filter: drop-shadow(0 0 1px #000); }
+.panel-map-overlay .centre { fill: #fff; stroke: #000; }
+.panel-map-overlay .handle { fill: #d95f02; stroke: #fff; stroke-width: 3; }
+.panel-map-overlay .handle-target { fill: transparent; pointer-events: all; cursor: grab; touch-action: none; }
+.panel-map-overlay.turning .handle-target { cursor: grabbing; }
+.panel-map-overlay.optimized .rotating { opacity: 0.5; }

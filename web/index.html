@@ -153,6 +153,14 @@
       <label>Performance ratio <input type="number" id="performance_ratio" value="0.80" min="0" max="1" step="any"></label>
       <label>Compare orientations (tilt/azimuth, comma-separated) <input type="text" id="compare" value="30/180, 30/90, 30/270, 90/180" placeholder="e.g. 30/180, 90/180"></label>
     </fieldset>
+    <fieldset>
+      <legend>Position and azimuth on the map</legend>
+      <p class="hint">Move the map to place the panel (the rectangle stays in the centre), and drag the round handle to turn it: the line points the way the panel faces, e.g. square to a roof edge. The handle sets the azimuth field and follows it.</p>
+      <div class="panel-map-wrap" hidden><div id="panel-map"></div></div>
+      <p class="summary" id="panel-map-note" hidden></p>
+      <input type="text" id="panel-map-latitude" hidden><input type="text" id="panel-map-longitude" hidden>
+      <div class="summary">The map starts at the site; placing the panel doesn't change the site (a few 100 m don't matter for the sun and the weather). Imagery: Esri World Imagery, or OpenStreetMap (layer button at the top right).</div>
+    </fieldset>
   </div>
   <p class="hint">The results are computed from the inputs of all tabs when you open the tab Results (Enter in a panel field opens it).</p>
 </section>
@@ -202,7 +210,7 @@
 
 <section id="tab-about" class="tab-panel" hidden>
   <h2>PV yield estimator</h2>
-  <p>Photovoltaic yield from weather data and an obstructed sky description; all computation runs in your browser (Python via Pyodide). Only the site search and the weather download contact other services.</p>
+  <p>Photovoltaic yield from weather data and an obstructed sky description; all computation runs in your browser (Python via Pyodide). Only the site search, the weather download and the panel map contact other services.</p>
   <p>Steps: set the site and the weather (<em>Site &amp; weather</em>), optionally describe the obstructed sky from a LiDAR scan, photos or a sky map (<em>Obstruction</em>), set the panel (<em>Panel</em>), then open the <em>Results</em>: they are computed when needed.</p>
   <p>Loaded inputs and the form are kept in this browser for your next visit, including the photos (not a LiDAR point cloud, which may be large). To keep everything or move it to another device, save the project (menu ☰: one zip with all inputs and the matching results) and load it there; single files (weather, obstructed sky description, photos, config) can be saved and loaded as well.</p>
   <p>Source code and CLI: <a href="https://github.com/laggondo/pv_yield">github.com/laggondo/pv_yield</a>.

@@ -29,7 +29,7 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
   - Browsers block requests from a static page to other sites unless those sites allow it (CORS). PVGIS (the EU's free solar data service) does not; Open-Meteo (reanalysis, real years averaged into a typical year) does (#8). So the browser downloads from Open-Meteo and links to the PVGIS file for a manual download; the CLI prefers PVGIS and falls back to Open-Meteo.
 - **Site selection:** place name or address (geocoding with Nominatim, OpenStreetMap), GPS on phones, or coordinates; the weather data comes from the nearest point the chosen service offers.
 - **Site coordinates** (latitude/longitude); may come from the weather data or from user inputs.
-- **Panel orientation** (tilt and azimuth), unless it is optimized.
+- **Panel orientation** (tilt and azimuth), unless it is optimized. In the browser, the azimuth can be set on a map of the site (aerial imagery, #38): the panel stays in the map's centre, panning places it, and a handle turns it, e.g. square to a roof edge. The map starts at the site but doesn't set it; a few 100 m don't matter for the sun position and the weather.
 - **Sky obstruction, LiDAR-based:** point cloud from a LiDAR scanner (e.g. Livox), see `legacy_code/`. Scans may be much larger than the 17 MB sample, so this step is meant for computers, not phones.
   - Scanner alignment relative to geographic north (yaw angle), entered manually.
   - Local panel offset: position of the panel relative to the scanner.

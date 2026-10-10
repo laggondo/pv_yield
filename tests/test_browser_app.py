@@ -233,6 +233,9 @@ def test_browser_page_computes_sample(tmp_path, session):
         context.route(f"{SITE_ORIGIN}/**", serve_site_file)
         context.route("https://nominatim.openstreetmap.org/**", lambda route: route.fulfill(body=NOMINATIM_REVERSE_ANSWER if "/reverse" in route.request.url else NOMINATIM_ANSWER, content_type="application/json", headers=cors))
         context.route("https://archive-api.open-meteo.com/**", lambda route: route.fulfill(body=open_meteo_response(years=(2024,)), content_type="application/json", headers=cors))
+        ### No map tiles from the imagery services (the panel map works without them).
+        for tile_server in ("https://server.arcgisonline.com/**", "https://tile.openstreetmap.org/**"):
+            context.route(tile_server, lambda route: route.fulfill(status=404))
         page = context.new_page()
         messages = []
         page.on("console", lambda message: messages.append(message.text))
@@ -313,6 +316,28 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert page.locator("#log").is_hidden()
             page.click("#log-details summary")
             assert page.locator("#log").is_visible() and "Computed" in page.text_content("#log")
+            ### Panel map (#38), at the weather data's coordinates (the site is empty): dragging the handle (pointing south) to the east of the panel turns it to 90°; panning the map places the panel.
+            page.click("#tabs [data-tab=panel]")
+            page.wait_for_selector("#panel-map.leaflet-container", timeout=60_000)
+            page.evaluate("(() => { const box = document.getElementById('panel-map').getBoundingClientRect(); window.scrollBy(0, box.top + box.height / 2 - window.innerHeight / 2); })()")
+            page.wait_for_timeout(1000)
+            box = page.locator(".panel-map-overlay").bounding_box()
+            centre_x, centre_y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            page.mouse.move(centre_x, centre_y + 75)
+            page.mouse.down()
+            page.mouse.move(centre_x + 75, centre_y, steps=5)
+            page.mouse.up()
+            assert page.input_value("#azimuth_deg") == "90" and page.input_value("#panel-map-latitude") == ""
+            map_box = page.locator("#panel-map").bounding_box()
+            page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.8 * map_box["height"])
+            page.mouse.down()
+            page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.5 * map_box["height"], steps=5)
+            page.mouse.up()
+            page.wait_for_function("document.getElementById('panel-map-latitude').value !== ''", timeout=10_000)
+            weather_latitude = page.evaluate("window.pvYieldApp.lastResult.site.latitude")
+            assert float(page.input_value("#panel-map-latitude")) < weather_latitude          ### dragged up: the panel moved south
+            page.fill("#azimuth_deg", "180")
+            assert "rotate(180)" in page.get_attribute(".panel-map-overlay .rotating", "transform")
             ### Marking obstructions by hand, starting from the sample: on the sky map (always shown at the top of the tab), on a loaded photo and on camera photos.
             n_sample_obstructed = sum(json.loads(SKY_PATH.read_text())["obstructed"])
             page.click("#tabs [data-tab=obstruction]")

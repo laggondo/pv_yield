@@ -7,12 +7,13 @@
 // between devices, one by one or all at once as a project zip (#37).
 
 import { createSkyEditor } from "./sky_editor.js";
+import { createPanelMap } from "./panel_map.js";
 
 const NO_SKY_SUMMARY = "none: no obstruction (free sky)";
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 // Form fields stored for the next visit and filled from a loaded config.
 const FORM_FIELDS = ["site-query", "site-latitude", "site-longitude", "weather-years", "weather-source", "tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare",
-  "scanner_heading_deg", "offset-east", "offset-north", "offset-up", "min_points", "n_sky_nodes", "camera_fov_deg"];
+  "scanner_heading_deg", "offset-east", "offset-north", "offset-up", "min_points", "n_sky_nodes", "camera_fov_deg", "panel-map-latitude", "panel-map-longitude"];
 // Enter in these fields opens the results tab (and so computes).
 const ENTER_SHOWS_RESULTS = ["tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare"];
 
@@ -25,6 +26,8 @@ let pythonReady = false;
 // Loaded inputs as file content, kept to re-parse (weather format change), to save as files and to store for the next visit.
 // The irradiation per sky patch is only kept to save it again, if a loaded project has it (the page computes its own).
 const inputs = { weather: null, sky: null, irradiation: null };        // {text, filename, source?}
+// The loaded weather data's coordinates ({latitude, longitude}), where the panel map starts without a site.
+let weatherSite = null;
 // Config entries without a form field, from a loaded config file; the form's entries are merged over them.
 let importedConfig = {};
 // Latest result, for inspection in the browser console and the smoke test.
@@ -59,6 +62,7 @@ function showTab(name) {
   window.scrollTo(0, 0);
   // Drawn while hidden, the sky map and photo get line widths for the wrong size.
   if (name === "obstruction") editor.redraw();
+  if (name === "panel") panelMap.show().catch(fail);
   updateResultsIfShown();
 }
 
@@ -143,6 +147,8 @@ async function whileBusy(action, finalState = "ready") {
   }
   updateButtons();
   updateResultsIfShown();
+  // Inputs that move the panel map (site, weather, config, project) may have changed.
+  if (!element("tab-panel").hidden) panelMap.show().catch(fail);
 }
 
 // Load a classic script (BokehJS) and resolve when it has run.
@@ -280,7 +286,8 @@ function currentConfig() {
     weather: { source: element("weather-source").value, n_years: requiredNumber("weather-years") },
     sky_obstruction: { method: "lidar", lidar: { scanner_heading_deg: requiredNumber("scanner_heading_deg"), panel_offset_m: ["offset-east", "offset-north", "offset-up"].map(requiredNumber), min_points: requiredNumber("min_points") },
       photo: { fov_deg: requiredNumber("camera_fov_deg") } },
-    panel: { tilt_deg: numberOrNull("tilt_deg"), azimuth_deg: numberOrNull("azimuth_deg"), area_m2: requiredNumber("area_m2"), efficiency: requiredNumber("efficiency"), performance_ratio: requiredNumber("performance_ratio") },
+    panel: { tilt_deg: numberOrNull("tilt_deg"), azimuth_deg: numberOrNull("azimuth_deg"), area_m2: requiredNumber("area_m2"), efficiency: requiredNumber("efficiency"), performance_ratio: requiredNumber("performance_ratio"),
+      map_latitude: numberOrNull("panel-map-latitude"), map_longitude: numberOrNull("panel-map-longitude") },
     orientation: { compare: parseCompare(element("compare").value) },
     simulation: { n_sky_nodes: requiredNumber("n_sky_nodes") },
   });
@@ -296,6 +303,8 @@ function applyConfig(config) {
   if (value("weather", "source")) element("weather-source").value = value("weather", "source");
   if (value("weather", "n_years")) set("weather-years", value("weather", "n_years"));
   for (const key of ["tilt_deg", "azimuth_deg"]) set(key, value("panel", key));
+  set("panel-map-latitude", value("panel", "map_latitude"));
+  set("panel-map-longitude", value("panel", "map_longitude"));
   for (const key of ["area_m2", "efficiency", "performance_ratio"]) if (value("panel", key) !== undefined) set(key, value("panel", key));
   if (value("orientation", "compare")) set("compare", value("orientation", "compare").map(pair => pair.join("/")).join(", "));
   const lidar = config.sky_obstruction?.lidar ?? {};
@@ -315,6 +324,7 @@ async function loadWeather(text, filename, source = "auto") {
   element("weather-summary").textContent = "loading ...";
   const summary = await call("loadWeather", text, filename, source);
   inputs.weather = { text, filename, source: summary.source };
+  weatherSite = { latitude: summary.latitude, longitude: summary.longitude };
   inputsVersion++;
   element("weather-source").value = source;
   element("weather-summary").textContent = `${filename}: ${summary.name}, ${format(summary.latitude, 3)}° N, ${format(summary.longitude, 3)}° E, ${format(summary.altitude, 0)} m; ${summary.n_hours} hours; annual GHI ${format(summary.annual_ghi_kwh_m2, 0)}, DNI ${format(summary.annual_dni_kwh_m2, 0)}, DHI ${format(summary.annual_dhi_kwh_m2, 0)} kWh/m²`;
@@ -370,6 +380,37 @@ const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => 
   site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }), onApplied: skyMarked,
   onPhotosChanged: async () => remember("photos", await editor.photoFiles()) });
 
+// The panel map (#38) starts at the panel's position, else at the site (form, else the weather data's coordinates).
+const panelMap = createPanelMap({ element, report,
+  start: () => {
+    const panel = { latitude: numberOrNull("panel-map-latitude"), longitude: numberOrNull("panel-map-longitude") };
+    const site = { latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") };
+    return [panel, site, weatherSite].find(position => position && position.latitude !== null && position.longitude !== null) ?? null;
+  },
+  azimuth: () => numberOrNull("azimuth_deg"),
+  onAzimuth: degrees => {
+    element("azimuth_deg").value = degrees;
+    remember("form", formValues());
+  },
+  onPosition: (latitude, longitude) => {
+    element("panel-map-latitude").value = latitude;
+    element("panel-map-longitude").value = longitude;
+    remember("form", formValues());
+  } });
+
+// A new site more than 1 km from the panel's position on the map moves the panel to the site (the map starts there);
+// closer, the panel stays where it was placed.
+function movePanelToNewSite() {
+  const panelLatitude = numberOrNull("panel-map-latitude"), panelLongitude = numberOrNull("panel-map-longitude");
+  const latitude = numberOrNull("site-latitude"), longitude = numberOrNull("site-longitude");
+  if (panelLatitude === null || panelLongitude === null || latitude === null || longitude === null) return;
+  const metresPerDegree = 111_195;
+  const distance = metresPerDegree * Math.hypot(latitude - panelLatitude, (longitude - panelLongitude) * Math.cos(latitude * Math.PI / 180));
+  if (distance <= 1000) return;
+  element("panel-map-latitude").value = element("panel-map-longitude").value = "";
+  report(`The panel moves to the new site (${format(distance / 1000, 1)} km from its place on the map)`);
+}
+
 // The site's coordinates from the form, or an error asking for them.
 function siteCoordinates() {
   const latitude = numberOrNull("site-latitude"), longitude = numberOrNull("site-longitude");
@@ -380,6 +421,7 @@ function siteCoordinates() {
 function setSite(latitude, longitude) {
   element("site-latitude").value = Number(latitude).toFixed(5);
   element("site-longitude").value = Number(longitude).toFixed(5);
+  movePanelToNewSite();
   updatePvgisLink();
   remember("form", formValues());
   if (editor.isStarted) editor.reload().catch(fail);      // sun paths for the new site
@@ -476,6 +518,7 @@ async function saveProject() {
 async function resetInputs() {
   await call("reset");
   Object.assign(inputs, { weather: null, sky: null, irradiation: null });
+  weatherSite = null;
   inputsVersion++;
   importedConfig = {};
   for (const id of FORM_FIELDS) {
@@ -674,6 +717,7 @@ element("site-results").addEventListener("change", event => setSite(foundPlaces[
 element("site-gps").addEventListener("click", () => whileBusy(locateByGps));
 for (const id of ["site-latitude", "site-longitude", "weather-years"]) element(id).addEventListener("change", () => updatePvgisLink().catch(fail));
 for (const id of ["site-latitude", "site-longitude"]) element(id).addEventListener("change", () => {
+  movePanelToNewSite();
   describeSite();
   if (editor.isStarted) editor.reload().catch(fail);      // sun paths for the new site
 });
@@ -730,6 +774,7 @@ element("photos-save").addEventListener("click", () => {
   if (editor.hasPhotos) saveFile("pv_yield_photos.json", editor.photoSetText(), "application/json");
   else report("No photos to save");
 });
+element("azimuth_deg").addEventListener("input", () => panelMap.drawAzimuth());
 for (const id of ENTER_SHOWS_RESULTS) {
   element(id).addEventListener("keydown", event => { if (event.key === "Enter") openTab("results"); });
 }
