@@ -324,11 +324,16 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.wait_for_timeout(1000)
             map_box = page.locator("#panel-map").bounding_box()
             centre_x, centre_y = map_box["x"] + map_box["width"] / 2, map_box["y"] + map_box["height"] / 2
-            page.mouse.move(centre_x, centre_y + 75)
-            page.mouse.down()
-            page.mouse.move(centre_x + 75, centre_y, steps=5)
-            page.mouse.up()
-            assert page.input_value("#azimuth_deg") == "90" and page.input_value("#site-latitude") == ""
+            ### With a finger (touch events, as on a phone): the page must not scroll instead.
+            scroll_before = page.evaluate("window.scrollY")
+            touch = page.context.new_cdp_session(page)
+            touch.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": centre_x, "y": centre_y + 75}]})
+            for step in range(1, 11):
+                angle = np.radians(9 * step)          ### along the circle from south to east
+                touch.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": centre_x + 75 * np.sin(angle), "y": centre_y + 75 * np.cos(angle)}]})
+            touch.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+            page.wait_for_timeout(500)
+            assert page.input_value("#azimuth_deg") == "90" and page.input_value("#site-latitude") == "" and page.evaluate("window.scrollY") == scroll_before
             page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.8 * map_box["height"])
             page.mouse.down()
             page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.5 * map_box["height"], steps=5)

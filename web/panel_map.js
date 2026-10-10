@@ -10,7 +10,7 @@ const IMAGERY_OPACITY = 0.2;
 // Distance of the turning handle from the panel's centre in screen pixels.
 const HANDLE_DISTANCE_PX = 75;
 // Overlay size in pixels (square, centred on the map): panel, line and handle.
-const OVERLAY_SIZE_PX = 2 * HANDLE_DISTANCE_PX + 50;
+const OVERLAY_SIZE_PX = 2 * HANDLE_DISTANCE_PX + 70;
 // Decimals of the coordinates the map reports (about 1 m), as in the site fields.
 const COORDINATE_DECIMALS = 5;
 
@@ -51,8 +51,8 @@ export function createPanelMap({ element, report, position, azimuth, onAzimuth, 
       <rect class="panel" x="-22" y="-13" width="44" height="26"></rect>
       <line class="facing-edge" x1="-22" y1="-13" x2="22" y2="-13"></line>
       <circle class="centre" r="3"></circle>
-      <circle class="handle-target" cx="0" cy="${-HANDLE_DISTANCE_PX}" r="22"></circle>
-      <circle class="handle" cx="0" cy="${-HANDLE_DISTANCE_PX}" r="10"></circle>
+      <circle class="handle-target" cx="0" cy="${-HANDLE_DISTANCE_PX}" r="32"></circle>
+      <circle class="handle" cx="0" cy="${-HANDLE_DISTANCE_PX}" r="12"></circle>
     </g>`;
   const rotating = overlay.querySelector(".rotating");
   const handleTarget = overlay.querySelector(".handle-target");
@@ -81,6 +81,9 @@ export function createPanelMap({ element, report, position, azimuth, onAzimuth, 
   });
   handleTarget.addEventListener("pointermove", event => { if (handleTarget.hasPointerCapture(event.pointerId)) turnTo(event); });
   for (const type of ["pointerup", "pointercancel"]) handleTarget.addEventListener(type, () => overlay.classList.remove("turning"));
+  // On phones, a finger on the handle would scroll the page after a few pixels (and cancel the turning): only cancelling
+  // the touch events stops that (cancelling the pointer events doesn't, and `touch-action` isn't honoured on SVG shapes everywhere).
+  for (const type of ["touchstart", "touchmove"]) handleTarget.addEventListener(type, event => event.preventDefault(), { passive: false });
 
   function showNote(text) {
     note.textContent = text;
