@@ -338,6 +338,13 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert float(page.input_value("#panel-map-latitude")) < weather_latitude          ### dragged up: the panel moved south
             page.fill("#azimuth_deg", "180")
             assert "rotate(180)" in page.get_attribute(".panel-map-overlay .rotating", "transform")
+            ### Orientations to compare as rows: "+" adds one, "×" removes one; the config gets the rows.
+            assert page.locator("#compare-rows input").count() == 8
+            page.click("#compare-add")
+            page.locator("#compare-rows input").nth(8).fill("45")
+            page.locator("#compare-rows input").nth(9).fill("200")
+            page.locator("#compare-rows button.remove").first.click()
+            assert page.input_value("#compare") == "30/90, 30/270, 90/180, 45/200"
             ### Marking obstructions by hand, starting from the sample: on the sky map (always shown at the top of the tab), on a loaded photo and on camera photos.
             n_sample_obstructed = sum(json.loads(SKY_PATH.read_text())["obstructed"])
             page.click("#tabs [data-tab=obstruction]")

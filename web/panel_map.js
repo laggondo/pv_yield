@@ -96,7 +96,7 @@ export function createPanelMap({ element, report, start, azimuth, onAzimuth, onP
     drawAzimuth();
     const position = start();
     container.parentElement.hidden = position === null;
-    if (position === null) return showNote("The map shows up when the site is set (tab Site & weather) or weather data is loaded.");
+    if (position === null) return showNote("The map shows up once the site is set or weather data is loaded (tab Site & weather).");
     showNote("");
     if (!map) {
       try {
@@ -104,7 +104,7 @@ export function createPanelMap({ element, report, start, azimuth, onAzimuth, onP
       } catch (error) {
         container.parentElement.hidden = true;
         report(`Could not load the map library (offline?): ${error.message ?? error}`);
-        return showNote("The map could not be loaded (it needs network access); the azimuth can still be entered above.");
+        return showNote("The map could not be loaded (it needs network access).");
       }
       // Zooming keeps the map's centre (the panel) in place, also with the mouse wheel and two fingers.
       map = leaflet.map(container, { center: [position.latitude, position.longitude], zoom: DEFAULT_ZOOM, maxZoom: 21, scrollWheelZoom: "center", touchZoom: "center", doubleClickZoom: "center" });
