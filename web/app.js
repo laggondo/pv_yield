@@ -13,7 +13,7 @@ const NO_SKY_SUMMARY = "none: no obstruction (free sky)";
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 // Form fields stored for the next visit and filled from a loaded config.
 const FORM_FIELDS = ["site-query", "site-latitude", "site-longitude", "weather-years", "weather-source", "tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio", "compare",
-  "scanner_heading_deg", "offset-east", "offset-north", "offset-up", "min_points", "n_sky_nodes", "camera_fov_deg", "panel-map-latitude", "panel-map-longitude"];
+  "scanner_heading_deg", "offset-east", "offset-north", "offset-up", "min_points", "n_sky_nodes", "camera_fov_deg"];
 // Enter in these fields opens the results tab (and so computes).
 const ENTER_SHOWS_RESULTS = ["tilt_deg", "azimuth_deg", "area_m2", "efficiency", "performance_ratio"];
 
@@ -314,8 +314,7 @@ function currentConfig() {
     weather: { source: element("weather-source").value, n_years: requiredNumber("weather-years") },
     sky_obstruction: { method: "lidar", lidar: { scanner_heading_deg: requiredNumber("scanner_heading_deg"), panel_offset_m: ["offset-east", "offset-north", "offset-up"].map(requiredNumber), min_points: requiredNumber("min_points") },
       photo: { fov_deg: requiredNumber("camera_fov_deg") } },
-    panel: { tilt_deg: numberOrNull("tilt_deg"), azimuth_deg: numberOrNull("azimuth_deg"), area_m2: requiredNumber("area_m2"), efficiency: requiredNumber("efficiency"), performance_ratio: requiredNumber("performance_ratio"),
-      map_latitude: numberOrNull("panel-map-latitude"), map_longitude: numberOrNull("panel-map-longitude") },
+    panel: { tilt_deg: numberOrNull("tilt_deg"), azimuth_deg: numberOrNull("azimuth_deg"), area_m2: requiredNumber("area_m2"), efficiency: requiredNumber("efficiency"), performance_ratio: requiredNumber("performance_ratio") },
     orientation: { compare: parseCompare(element("compare").value) },
     simulation: { n_sky_nodes: requiredNumber("n_sky_nodes") },
   });
@@ -331,8 +330,6 @@ function applyConfig(config) {
   if (value("weather", "source")) element("weather-source").value = value("weather", "source");
   if (value("weather", "n_years")) set("weather-years", value("weather", "n_years"));
   for (const key of ["tilt_deg", "azimuth_deg"]) set(key, value("panel", key));
-  set("panel-map-latitude", value("panel", "map_latitude"));
-  set("panel-map-longitude", value("panel", "map_longitude"));
   for (const key of ["area_m2", "efficiency", "performance_ratio"]) if (value("panel", key) !== undefined) set(key, value("panel", key));
   if (value("orientation", "compare")) set("compare", value("orientation", "compare").map(pair => pair.join("/")).join(", "));
   renderCompareRows();
@@ -409,12 +406,13 @@ const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => 
   site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }), onApplied: skyMarked,
   onPhotosChanged: async () => remember("photos", await editor.photoFiles()) });
 
-// The panel map (#38) starts at the panel's position, else at the site (form, else the weather data's coordinates).
+// The panel map (#38) is centred on the site (form, else the weather data's coordinates); panning it sets the site. The
+// place name (reverse search) and the sun paths of the sky editor follow once the map rests for a moment.
+let siteMovedTimer = null;
 const panelMap = createPanelMap({ element, report,
   position: () => {
-    const panel = { latitude: numberOrNull("panel-map-latitude"), longitude: numberOrNull("panel-map-longitude") };
     const site = { latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") };
-    return [panel, site, weatherSite].find(position => position && position.latitude !== null && position.longitude !== null) ?? null;
+    return [site, weatherSite].find(position => position && position.latitude !== null && position.longitude !== null) ?? null;
   },
   azimuth: () => numberOrNull("azimuth_deg"),
   onAzimuth: degrees => {
@@ -422,23 +420,16 @@ const panelMap = createPanelMap({ element, report,
     remember("form", formValues());
   },
   onPosition: (latitude, longitude) => {
-    element("panel-map-latitude").value = latitude;
-    element("panel-map-longitude").value = longitude;
+    element("site-latitude").value = latitude.toFixed(5);
+    element("site-longitude").value = longitude.toFixed(5);
+    updatePvgisLink().catch(fail);
     remember("form", formValues());
+    clearTimeout(siteMovedTimer);
+    siteMovedTimer = setTimeout(() => {
+      describeSite();
+      if (editor.isStarted) editor.reload().catch(fail);
+    }, 1500);
   } });
-
-// A new site more than 1 km from the panel's position on the map moves the panel to the site (the map starts there);
-// closer, the panel stays where it was placed.
-function movePanelToNewSite() {
-  const panelLatitude = numberOrNull("panel-map-latitude"), panelLongitude = numberOrNull("panel-map-longitude");
-  const latitude = numberOrNull("site-latitude"), longitude = numberOrNull("site-longitude");
-  if (panelLatitude === null || panelLongitude === null || latitude === null || longitude === null) return;
-  const metresPerDegree = 111_195;
-  const distance = metresPerDegree * Math.hypot(latitude - panelLatitude, (longitude - panelLongitude) * Math.cos(latitude * Math.PI / 180));
-  if (distance <= 1000) return;
-  element("panel-map-latitude").value = element("panel-map-longitude").value = "";
-  report(`The panel moves to the new site (${format(distance / 1000, 1)} km from its place on the map)`);
-}
 
 // The site's coordinates from the form, or an error asking for them.
 function siteCoordinates() {
@@ -450,7 +441,6 @@ function siteCoordinates() {
 function setSite(latitude, longitude) {
   element("site-latitude").value = Number(latitude).toFixed(5);
   element("site-longitude").value = Number(longitude).toFixed(5);
-  movePanelToNewSite();
   updatePvgisLink();
   remember("form", formValues());
   if (editor.isStarted) editor.reload().catch(fail);      // sun paths for the new site
@@ -747,7 +737,6 @@ element("site-results").addEventListener("change", event => setSite(foundPlaces[
 element("site-gps").addEventListener("click", () => whileBusy(locateByGps));
 for (const id of ["site-latitude", "site-longitude", "weather-years"]) element(id).addEventListener("change", () => updatePvgisLink().catch(fail));
 for (const id of ["site-latitude", "site-longitude"]) element(id).addEventListener("change", () => {
-  movePanelToNewSite();
   describeSite();
   if (editor.isStarted) editor.reload().catch(fail);      // sun paths for the new site
 });

@@ -22,10 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       ### The build script uses the standard library only, so the runner's Python suffices.
-      ### The Google Maps key for the panel map, from the repository variable (Settings → Secrets and variables → Actions → Variables); empty: Esri imagery.
       - run: python3 web/build_site.py -o _site
-        env:
-          GOOGLE_MAPS_API_KEY: ${{ vars.GOOGLE_MAPS_API_KEY }}
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

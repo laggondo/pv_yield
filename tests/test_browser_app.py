@@ -184,9 +184,6 @@ def test_build_site(tmp_path):
         names = archive.namelist()
     assert "pv_yield_estimator/browser.py" in names and "pv_yield_estimator/core/sky.py" in names
     assert not (site / "build_site.py").exists()
-    assert 'GOOGLE_MAPS_API_KEY = "";' in (site / "site_settings.js").read_text()
-    keyed_site = load_build_site_module().build_site(tmp_path / "keyed_site", google_maps_api_key="test-key")
-    assert 'GOOGLE_MAPS_API_KEY = "test-key";' in (keyed_site / "site_settings.js").read_text()
 
 
 def swipe_up_over(page, selector):
@@ -319,8 +316,8 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert page.locator("#log").is_hidden()
             page.click("#log-details summary")
             assert page.locator("#log").is_visible() and "Computed" in page.text_content("#log")
-            ### Panel map (#38), with Leaflet (no Google Maps key), at the weather data's coordinates (the site is empty): dragging the handle (pointing south) to the east of the panel turns it
-            ### to 90°; dragging the panel 100 px up moves it north; "Panel to the map centre" moves it back.
+            ### Panel map (#38), at the weather data's coordinates (the site is empty): dragging the handle (pointing south) to the east of the panel turns it to 90°; panning the map moves
+            ### the panel and sets the site (cleared again afterwards, so the results match the native session).
             page.click("#tabs [data-tab=panel]")
             page.wait_for_selector("#panel-map.leaflet-container", timeout=60_000)
             page.evaluate("(() => { const box = document.getElementById('panel-map').getBoundingClientRect(); window.scrollBy(0, box.top + box.height / 2 - window.innerHeight / 2); })()")
@@ -331,15 +328,19 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.mouse.down()
             page.mouse.move(centre_x + 75, centre_y, steps=5)
             page.mouse.up()
-            assert page.input_value("#azimuth_deg") == "90" and page.input_value("#panel-map-latitude") == ""
-            page.mouse.move(centre_x, centre_y)
+            assert page.input_value("#azimuth_deg") == "90" and page.input_value("#site-latitude") == ""
+            page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.8 * map_box["height"])
             page.mouse.down()
-            page.mouse.move(centre_x, centre_y - 100, steps=5)
+            page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.5 * map_box["height"], steps=5)
             page.mouse.up()
+            page.wait_for_function("document.getElementById('site-latitude').value !== ''", timeout=10_000)
             weather_latitude = page.evaluate("window.pvYieldApp.lastResult.site.latitude")
-            assert float(page.input_value("#panel-map-latitude")) > weather_latitude
-            page.click("#panel-map-centre")
-            assert float(page.input_value("#panel-map-latitude")) == pytest.approx(weather_latitude, abs=1e-5)
+            assert float(page.input_value("#site-latitude")) < weather_latitude          ### dragged up: the panel moved south
+            page.wait_for_function("document.getElementById('site-query').value.startsWith('Rathausplatz')", timeout=10_000)     ### the place name follows (canned reverse search)
+            page.click("#tabs [data-tab=site]")
+            page.fill("#site-latitude", "")
+            page.fill("#site-longitude", "")
+            page.click("#tabs [data-tab=panel]")
             page.fill("#azimuth_deg", "180")
             assert "rotate(180)" in page.get_attribute(".panel-map-overlay .rotating", "transform")
             ### Orientations to compare as rows: "+" adds one, "×" removes one; the config gets the rows.
