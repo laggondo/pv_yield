@@ -342,10 +342,15 @@ def test_browser_page_computes_sample(tmp_path, session):
             weather_latitude = page.evaluate("window.pvYieldApp.lastResult.site.latitude")
             assert float(page.input_value("#site-latitude")) < weather_latitude          ### dragged up: the panel moved south
             page.wait_for_function("document.getElementById('site-query').value.startsWith('Rathausplatz')", timeout=10_000)     ### the place name follows (canned reverse search)
+            ### A new site reloads the sky editor (sun paths); the marking below waits for it, so a tap isn't lost in the reload.
+            count_editor_loads = "document.getElementById('log').textContent.split('Marking obstructions on').length"
+            page.wait_for_timeout(500)
+            editor_loads = page.evaluate(count_editor_loads)
             page.click("#tabs [data-tab=site]")
             page.fill("#site-latitude", "")
             page.fill("#site-longitude", "")
             page.click("#tabs [data-tab=panel]")
+            page.wait_for_function(f"{count_editor_loads} > {editor_loads}", timeout=30_000)
             page.fill("#azimuth_deg", "180")
             assert "rotate(180)" in page.get_attribute(".panel-map-overlay .rotating", "transform")
             ### Orientations to compare as rows: "+" adds one, "×" removes one; the config gets the rows.
