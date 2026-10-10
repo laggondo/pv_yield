@@ -411,7 +411,7 @@ const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => 
 
 // The panel map (#38) starts at the panel's position, else at the site (form, else the weather data's coordinates).
 const panelMap = createPanelMap({ element, report,
-  start: () => {
+  position: () => {
     const panel = { latitude: numberOrNull("panel-map-latitude"), longitude: numberOrNull("panel-map-longitude") };
     const site = { latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") };
     return [panel, site, weatherSite].find(position => position && position.latitude !== null && position.longitude !== null) ?? null;

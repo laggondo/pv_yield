@@ -184,6 +184,9 @@ def test_build_site(tmp_path):
         names = archive.namelist()
     assert "pv_yield_estimator/browser.py" in names and "pv_yield_estimator/core/sky.py" in names
     assert not (site / "build_site.py").exists()
+    assert 'GOOGLE_MAPS_API_KEY = "";' in (site / "site_settings.js").read_text()
+    keyed_site = load_build_site_module().build_site(tmp_path / "keyed_site", google_maps_api_key="test-key")
+    assert 'GOOGLE_MAPS_API_KEY = "test-key";' in (keyed_site / "site_settings.js").read_text()
 
 
 def swipe_up_over(page, selector):
@@ -316,35 +319,37 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert page.locator("#log").is_hidden()
             page.click("#log-details summary")
             assert page.locator("#log").is_visible() and "Computed" in page.text_content("#log")
-            ### Panel map (#38), at the weather data's coordinates (the site is empty): dragging the handle (pointing south) to the east of the panel turns it to 90°; panning the map places the panel.
+            ### Panel map (#38), with Leaflet (no Google Maps key), at the weather data's coordinates (the site is empty): dragging the handle (pointing south) to the east of the panel turns it
+            ### to 90°; dragging the panel 100 px up moves it north; "Panel to the map centre" moves it back.
             page.click("#tabs [data-tab=panel]")
             page.wait_for_selector("#panel-map.leaflet-container", timeout=60_000)
             page.evaluate("(() => { const box = document.getElementById('panel-map').getBoundingClientRect(); window.scrollBy(0, box.top + box.height / 2 - window.innerHeight / 2); })()")
             page.wait_for_timeout(1000)
-            box = page.locator(".panel-map-overlay").bounding_box()
-            centre_x, centre_y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            map_box = page.locator("#panel-map").bounding_box()
+            centre_x, centre_y = map_box["x"] + map_box["width"] / 2, map_box["y"] + map_box["height"] / 2
             page.mouse.move(centre_x, centre_y + 75)
             page.mouse.down()
             page.mouse.move(centre_x + 75, centre_y, steps=5)
             page.mouse.up()
             assert page.input_value("#azimuth_deg") == "90" and page.input_value("#panel-map-latitude") == ""
-            map_box = page.locator("#panel-map").bounding_box()
-            page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.8 * map_box["height"])
+            page.mouse.move(centre_x, centre_y)
             page.mouse.down()
-            page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.5 * map_box["height"], steps=5)
+            page.mouse.move(centre_x, centre_y - 100, steps=5)
             page.mouse.up()
-            page.wait_for_function("document.getElementById('panel-map-latitude').value !== ''", timeout=10_000)
             weather_latitude = page.evaluate("window.pvYieldApp.lastResult.site.latitude")
-            assert float(page.input_value("#panel-map-latitude")) < weather_latitude          ### dragged up: the panel moved south
+            assert float(page.input_value("#panel-map-latitude")) > weather_latitude
+            page.click("#panel-map-centre")
+            assert float(page.input_value("#panel-map-latitude")) == pytest.approx(weather_latitude, abs=1e-5)
             page.fill("#azimuth_deg", "180")
             assert "rotate(180)" in page.get_attribute(".panel-map-overlay .rotating", "transform")
             ### Orientations to compare as rows: "+" adds one, "×" removes one; the config gets the rows.
-            assert page.locator("#compare-rows input").count() == 8
-            page.click("#compare-add")
-            page.locator("#compare-rows input").nth(8).fill("45")
-            page.locator("#compare-rows input").nth(9).fill("200")
+            assert page.locator("#compare-rows input").count() == 0
+            for tilt, azimuth in (("30", "90"), ("45", "200")):
+                page.click("#compare-add")
+                page.locator("#compare-rows input").nth(-2).fill(tilt)
+                page.locator("#compare-rows input").nth(-1).fill(azimuth)
             page.locator("#compare-rows button.remove").first.click()
-            assert page.input_value("#compare") == "30/90, 30/270, 90/180, 45/200"
+            assert page.input_value("#compare") == "45/200"
             ### Marking obstructions by hand, starting from the sample: on the sky map (always shown at the top of the tab), on a loaded photo and on camera photos.
             n_sample_obstructed = sum(json.loads(SKY_PATH.read_text())["obstructed"])
             page.click("#tabs [data-tab=obstruction]")

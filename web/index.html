@@ -143,8 +143,9 @@
   <div class="inputs">
     <fieldset>
       <legend>Orientation</legend>
-      <p class="hint">Pan the map to place the panel, drag the handle to turn it.</p>
+      <p class="hint">Drag the panel to place it and the round handle to turn it.</p>
       <div class="panel-map-wrap" hidden><div id="panel-map"></div></div>
+      <button id="panel-map-centre" class="small" hidden>Panel to the map centre</button>
       <p class="summary" id="panel-map-note" hidden></p>
       <input type="text" id="panel-map-latitude" hidden><input type="text" id="panel-map-longitude" hidden>
       <div class="orientation-rows">
@@ -156,7 +157,7 @@
       </div>
       <div class="orientation-rows" id="compare-rows"></div>
       <button id="compare-add" class="small" aria-label="Add an orientation to compare">+ Compare</button>
-      <input type="text" id="compare" value="30/180, 30/90, 30/270, 90/180" hidden>
+      <input type="text" id="compare" value="" hidden>
       <div class="summary">Tilt 0 = horizontal; azimuth on the compass, 180 = south. Empty: optimized.</div>
     </fieldset>
     <fieldset>
