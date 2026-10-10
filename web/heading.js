@@ -19,7 +19,7 @@ const radians = degrees => degrees * Math.PI / 180;
 
 // Rotation matrix from device to earth coordinates for W3C device orientation angles (Z-X'-Y'' intrinsic), as
 // `rotation_from_device_angles` in core/photo.py.
-function rotationFromDeviceAngles({ alpha_deg, beta_deg, gamma_deg }) {
+export function rotationFromDeviceAngles({ alpha_deg, beta_deg, gamma_deg }) {
   const [ca, sa, cb, sb, cg, sg] = [alpha_deg, beta_deg, gamma_deg].flatMap(angle => [Math.cos(radians(angle)), Math.sin(radians(angle))]);
   return [
     [ca * cg - sa * sb * sg, -sa * cb, ca * sg + sa * sb * cg],
@@ -108,4 +108,22 @@ export class HeadingFusion {
     this.locked = true;
     this.lastCorrection = time;
   }
+}
+
+// Field of view calibration: an object far away is put on one of two lines across the image's longer side, then the
+// phone is turned until the object sits on the other line. The lines are `MARKER_FRACTION` of the half image away from
+// the centre, so the turn between the two camera directions is 2 atan(MARKER_FRACTION tan(fov / 2)) (pinhole camera).
+export const MARKER_FRACTION = 0.8;
+
+// The back camera's viewing direction (earth coordinates) for device orientation angles: the device's -z axis.
+export function cameraForward(angles) {
+  const rotation = rotationFromDeviceAngles(angles);
+  return rotation.map(row => -row[2]);
+}
+
+// Field of view (degrees, across the longer image side) from the camera directions with the object on either line.
+export function fieldOfViewFromTurn(firstForward, secondForward) {
+  const cosine = Math.max(-1, Math.min(1, firstForward.reduce((sum, value, index) => sum + value * secondForward[index], 0)));
+  const turn = Math.acos(cosine);
+  return 2 * Math.atan(Math.tan(turn / 2) / MARKER_FRACTION) * 180 / Math.PI;
 }

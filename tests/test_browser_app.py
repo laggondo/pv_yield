@@ -342,10 +342,15 @@ def test_browser_page_computes_sample(tmp_path, session):
             weather_latitude = page.evaluate("window.pvYieldApp.lastResult.site.latitude")
             assert float(page.input_value("#site-latitude")) < weather_latitude          ### dragged up: the panel moved south
             page.wait_for_function("document.getElementById('site-query').value.startsWith('Rathausplatz')", timeout=10_000)     ### the place name follows (canned reverse search)
+            ### A new site reloads the sky editor (sun paths); the marking below waits for it, so a tap isn't lost in the reload.
+            count_editor_loads = "document.getElementById('log').textContent.split('Marking obstructions on').length"
+            page.wait_for_timeout(500)
+            editor_loads = page.evaluate(count_editor_loads)
             page.click("#tabs [data-tab=site]")
             page.fill("#site-latitude", "")
             page.fill("#site-longitude", "")
             page.click("#tabs [data-tab=panel]")
+            page.wait_for_function(f"{count_editor_loads} > {editor_loads}", timeout=30_000)
             page.fill("#azimuth_deg", "180")
             assert "rotate(180)" in page.get_attribute(".panel-map-overlay .rotating", "transform")
             ### Orientations to compare as rows: "+" adds one, "×" removes one; the config gets the rows.
@@ -496,6 +501,26 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert float(page.input_value("#photo-azimuth_deg")) == pytest.approx(expected_azimuth, abs=0.1)
             page.click("#photo-list .photo-item >> nth=1 >> button >> nth=0")
             assert abs(float(page.input_value("#photo-azimuth_deg")) - expected_azimuth) < 10       ### the wild compass moved the view only a little
+            ### Field of view calibration with the gyroscope: an object on one line, then the phone turned by 50° until it sits on the other line (lines at 80 % of the half image).
+            assert page.input_value("#camera_fov_deg") == "65"                    ### the default without calibration
+            page.click("#fov-calibrate")
+            wait_idle()
+            page.evaluate("""() => {
+                window.gyroscopeAlpha = 100;
+                window.sensorTimer = setInterval(() => window.dispatchEvent(new DeviceOrientationEvent("deviceorientation", { alpha: window.gyroscopeAlpha, beta: 90, gamma: 0, absolute: false })), 50);
+            }""")
+            page.wait_for_function("document.getElementById('camera-note').textContent.includes('one yellow line') && !document.getElementById('camera-shoot').disabled", timeout=10_000)
+            page.click("#camera-shoot")
+            page.evaluate("window.gyroscopeAlpha = 50")
+            page.wait_for_function("document.getElementById('camera-note').textContent.includes('other yellow line')", timeout=10_000)
+            page.wait_for_timeout(300)
+            page.click("#camera-shoot")
+            page.evaluate("clearInterval(window.sensorTimer)")
+            expected_fov = 2 * np.degrees(np.arctan(np.tan(np.radians(25)) / 0.8))
+            assert page.locator("#camera").is_hidden() and float(page.input_value("#camera_fov_deg")) == pytest.approx(expected_fov, abs=0.1)
+            ### Kept in the config, so also in the browser's storage and in a saved project.
+            page.click("#menu-button")
+            assert f"fov_deg: {round(expected_fov, 1)}".encode() in download("#config-save")
             ### An error shows one line at the top (no traceback); the log has the traceback.
             bad_sky_path = tmp_path / "not_a_sky.json"
             bad_sky_path.write_text('{"kind": "something else"}')

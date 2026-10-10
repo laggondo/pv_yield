@@ -11,7 +11,7 @@
 // Python (core/photo.py); this module only draws and handles input. Photos are assumed to be taken from the panel
 // position: no offset is applied (#11).
 
-import { HeadingFusion } from "./heading.js";
+import { HeadingFusion, MARKER_FRACTION, cameraForward, fieldOfViewFromTurn } from "./heading.js";
 
 const PHOTO_SET_FORMAT_VERSION = 1;
 const MAX_PHOTO_PX = 1600;           // longer side of stored photos, to keep memory and saved files small
@@ -34,8 +34,9 @@ const SKY_MAP_REDRAW_DELAY_MS = 250;  // the merged photos are recomputed this l
 
 // Create the editor on the page's elements; `call` runs a worker action, `report` logs, `onApplied(summary)` is called
 // after the marked flags were sent to Python as the new obstructed sky description, `onPhotosChanged()` a moment after
-// photos were added, removed or aligned (to store them for the next visit). Marking starts with `reload()`.
-export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyNodes, site, onApplied, onPhotosChanged }) {
+// photos were added, removed or aligned (to store them for the next visit), `onFovCalibrated(fovDeg)` after the camera's
+// field of view was calibrated. Marking starts with `reload()`.
+export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyNodes, site, onApplied, onPhotosChanged, onFovCalibrated }) {
   let sky = null;                      // {nodes, triangles}; null until the first reload
   let flags = null;                    // Uint8Array, one entry per patch
   let skyMapPixels = null;             // node positions in the sky map
@@ -49,7 +50,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   let markValue = 1;                   // what tapping sets: 1 marks as obstructed, 0 frees
   let photosChangedTimer = null;
   let skyMapRedrawTimer = null;
-  const camera = { stream: null, fusion: new HeadingFusion(), compassHeading: null, listeners: [], projection: null, running: false, requestInFlight: false, photosTaken: 0, shooting: false };
+  const camera = { stream: null, fusion: new HeadingFusion(), compassHeading: null, listeners: [], projection: null, running: false, requestInFlight: false, photosTaken: 0, shooting: false, calibration: null };
 
   // ---- Geometry ----
 
@@ -610,6 +611,11 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     if (!camera.running) return;
     const video = element("camera-video");
     const overlay = element("camera-overlay");
+    if (camera.calibration) {
+      showCalibration(video, overlay);
+      requestAnimationFrame(liveOverlay);
+      return;
+    }
     showSensorState();
     const orientation = currentOrientation();
     if (orientation && video.videoWidth && !camera.requestInFlight) {
@@ -634,6 +640,78 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
         + (orientation.absolute ? "" : "; no compass: correct the azimuth after taking the photo");
     }
     requestAnimationFrame(liveOverlay);
+  }
+
+  // ---- Field of view calibration (in the camera) ----
+
+  // The orientation for measuring a turn: the gyroscope's where it comes in (steady, no compass needed), else any.
+  function calibrationOrientation() {
+    const gyroscope = camera.fusion.gyroscope;
+    return gyroscope && now() - gyroscope.time < 1 ? gyroscope : currentOrientation();
+  }
+
+  // Two lines across the image's longer side (MARKER_FRACTION of the half image from the centre) and the step's instructions.
+  function showCalibration(video, overlay) {
+    if (!video.videoWidth) return;
+    overlay.width = video.videoWidth;
+    overlay.height = video.videoHeight;
+    const context = overlay.getContext("2d"), scale = displayScale(overlay), landscape = overlay.width >= overlay.height;
+    context.clearRect(0, 0, overlay.width, overlay.height);
+    const half = (landscape ? overlay.width : overlay.height) / 2;
+    for (const sign of [-1, 1]) {
+      const position = half + sign * MARKER_FRACTION * half;
+      const line = landscape ? [[position, 0], [position, overlay.height]] : [[0, position], [overlay.width, position]];
+      for (const [width, color] of [[7, "rgba(0, 0, 0, 0.6)"], [3, "yellow"]]) {
+        context.lineWidth = width * scale;
+        context.strokeStyle = color;
+        context.beginPath();
+        context.moveTo(...line[0]);
+        context.lineTo(...line[1]);
+        context.stroke();
+      }
+    }
+    const direction = landscape ? "sideways" : "up or down";
+    const note = !calibrationOrientation()
+      ? "Calibrating the field of view needs the motion sensors; none are reporting."
+      : camera.calibration.step === 1
+        ? "Field of view: pick a distinct object far away (e.g. a pole or a building edge, 50 m or more). Turn the phone until the object sits on one yellow line, then tap the shutter."
+        : `Now turn the phone ${direction}, staying at the same place, until the same object sits on the other yellow line, then tap the shutter.`;
+    element("camera-note").textContent = note;
+    element("camera-note").hidden = false;
+    element("camera-status").textContent = "Calibrating the camera's field of view (step " + camera.calibration.step + " of 2); Done cancels.";
+    element("camera-shoot").disabled = !calibrationOrientation();
+  }
+
+  // A shutter tap while calibrating: note the first direction, or compute the field of view from the turn to the second.
+  function calibrationStep() {
+    const orientation = calibrationOrientation();
+    if (!orientation) return;
+    flash();
+    const forward = cameraForward(orientation);
+    if (camera.calibration.step === 1) {
+      camera.calibration = { step: 2, first: forward };
+      return;
+    }
+    const fov = fieldOfViewFromTurn(camera.calibration.first, forward);
+    if (!(fov >= 10 && fov <= 170)) {
+      report(`Field of view calibration gave ${fov.toFixed(1)}°, outside 10–170°: start again with step 1`);
+      camera.calibration = { step: 1 };
+      return;
+    }
+    const rounded = Math.round(fov * 10) / 10;
+    report(`Field of view calibrated: ${rounded}° across the longer image side`);
+    stopCamera();
+    onFovCalibrated(rounded);
+  }
+
+  async function startCalibration() {
+    camera.calibration = { step: 1 };
+    try {
+      await openCamera();
+    } catch (error) {
+      stopCamera();
+      throw error;
+    }
   }
 
   // Hardware keys (volume, camera key, Enter, space) take the photo, where the browser passes them to the page.
@@ -672,6 +750,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     await video.play();
     window.addEventListener("keydown", onCameraKey);
     camera.photosTaken = 0;
+    element("camera-note").hidden = true;
     camera.running = true;
     element("camera-status").textContent = "Waiting for the motion sensors ... (without them, the photo gets a default orientation to align afterwards)";
     report(`Camera started (${video.videoWidth} x ${video.videoHeight} pixels, orientation from ${camera.listeners.map(([name]) => name).join(" and ")})`);
@@ -680,6 +759,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
 
   function stopCamera() {
     camera.running = false;
+    camera.calibration = null;
     camera.stream?.getTracks().forEach(track => track.stop());
     camera.stream = null;
     for (const [name, listener] of camera.listeners) window.removeEventListener(name, listener);
@@ -706,6 +786,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   // Take a photo and stay in the camera: the live view then marks the patches the new photo covers, so the next photo
   // can aim at the rest of the sky. "Done" leaves the camera.
   async function takePhoto() {
+    if (camera.calibration && camera.running) return calibrationStep();
     if (camera.shooting || !camera.running || !shutterReady()) return;
     camera.shooting = true;
     try {
@@ -824,7 +905,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   element("sky-map-photos").addEventListener("change", drawSkyMap);
 
   return {
-    reload, redraw: draw, startCamera, stopCamera, takePhoto, loadPhotoFile, photoSetText, photoFiles, setPhotos,
+    reload, redraw: draw, startCamera, startCalibration, stopCamera, takePhoto, loadPhotoFile, photoSetText, photoFiles, setPhotos,
     get isStarted() { return sky !== null; },
     get hasPhotos() { return photos.length > 0; },
   };
