@@ -6,6 +6,7 @@ Project-specific guidance for Claude Code sessions working in this repository.
 
 - Read [`concept.md`](concept.md) first: it describes the big picture and is the reference for the rewrite.
 - Layout: the Python package in `src/pv_yield_estimator/` (`core/`: algorithms without user interaction or file access; `plotting/`; `cli/`), the browser front end as static files in `web/` (Python side: `browser.py`; see `web/README.md`), tests in `tests/`, example configs in `examples/`. `tests/legacy_reference/` records the legacy code's results on the sample data for the regression test (`tests/test_legacy_comparison.py`).
+- AR video recordings of the user (#46) show their home and are **private**: never commit them, attach them to issues or pull requests, or post images from them; report results as numbers. Tests use synthetic recordings (`tests/synthetic_recording.py`).
 - `legacy_code/` and `data/` are reference samples only. Don't refactor or extend the legacy code; the program is being rewritten from scratch.
 
 ## Workflow

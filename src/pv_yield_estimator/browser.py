@@ -4,7 +4,8 @@ The page passes file contents and the config as strings and receives JSON string
 Python objects cross into JavaScript. Network requests (site search, weather download) are made by the page with
 `fetch`; this module builds their URLs and parses the responses. The irradiation per sky patch is cached: changing
 only the panel or orientation sections recomputes just the yield. Projects (all files in one zip, #37) are written to
-and read from Pyodide's file system, where the worker passes the photos and the point cloud as files.
+and read from Pyodide's file system, where the worker passes the photos, the AR recording's frames and the point cloud
+as files.
 """
 
 import io
@@ -20,6 +21,7 @@ from bokeh.embed import json_item
 
 from pv_yield_estimator import __version__
 from pv_yield_estimator.config import config_from_yaml, config_to_yaml, default_config, log_config, merge_configs
+from pv_yield_estimator.core.ar_recording import check_recording, frame_file_name, recording_summary
 from pv_yield_estimator.core.export import export_files, monthly_rows
 from pv_yield_estimator.core.irradiation import compute_patch_irradiation, sun_path_directions
 from pv_yield_estimator.core.obstruction_methods import sky_obstruction_method
@@ -30,8 +32,8 @@ from pv_yield_estimator.core.weather import distance_km, load_weather, resolve_s
 from pv_yield_estimator.core.weather_download import parse_site_name, parse_site_search, pvgis_tmy_url, site_name_url, site_search_url, weather_download_candidates
 from pv_yield_estimator.file_format import FORMAT_VERSION_KEY, check_format_version, to_json_text
 from pv_yield_estimator.plotting.interactive import SUN_PATH_DAYS, result_plots
-from pv_yield_estimator.project import (CONFIG_NAME, IRRADIATION_NAME, MANIFEST_NAME, OBSTRUCTED_SKY_NAME, PHOTOS_DIRECTORY, PHOTOS_NAME, POINT_CLOUD_STEM, REPORT_NAME, RESULTS_DIRECTORY, WEATHER_STEM,
-                                        find_project_file, project_file_name, read_project_manifest, write_project_zip)
+from pv_yield_estimator.project import (CONFIG_NAME, IRRADIATION_NAME, MANIFEST_NAME, OBSTRUCTED_SKY_NAME, PHOTOS_DIRECTORY, PHOTOS_NAME, POINT_CLOUD_STEM, RECORDING_NAME, REPORT_NAME, RESULTS_DIRECTORY,
+                                        WEATHER_STEM, find_project_file, project_file_name, read_project_manifest, write_project_zip)
 
 log = logging.getLogger(__name__)
 
@@ -189,6 +191,21 @@ class BrowserSession:
         return json.dumps({"view": camera.settings(), "camera": axes, "pixels": np.round(pixels, 2).tolist(), "in_front": in_front.tolist(), "horizon": horizon, "sun_paths": sun_paths,
                            "markers": [{"label": label, "x": float(x), "y": float(y)} for label, (x, y), front in zip([*labels, "zenith"], label_pixels, label_in_front) if front]})
 
+    def recording_summary(self, recording_json, heading_offset_deg=None, latitude=None, longitude=None):
+        """Inspection of an AR recording (#47; JSON of `recording.json`): key figures, the frames as camera views and the camera path, see `core.ar_recording.recording_summary`.
+
+        `heading_offset_deg` set by hand overrides the compass estimate; the site's coordinates (else the weather
+        data's) give the GPS position's distance from the site. Each frame also gets its camera axes (earth
+        coordinates) and focal length in pixels (`cameras`), with which the page maps the frames onto the sky map.
+        """
+        recording = check_recording(json.loads(recording_json), "AR recording")
+        if (latitude is None or longitude is None) and self.weather is not None:
+            latitude, longitude = self.weather.latitude, self.weather.longitude
+        summary = recording_summary(recording, heading_offset_deg, latitude, longitude)
+        cameras = [CameraView(**view) for view in summary["views"]]
+        summary["cameras"] = [{"right": camera.right.tolist(), "up": camera.up.tolist(), "forward": camera.forward.tolist(), "focal_length_px": camera.focal_length_px} for camera in cameras]
+        return json.dumps(summary)
+
     def apply_edits(self, obstructed_json, methods_json, details_json="{}"):
         """Use the flags marked by hand as obstructed sky description (edits baked in, on the start state's discretization); returns the JSON summary."""
         if self.editor_base is None:
@@ -254,7 +271,8 @@ class BrowserSession:
         """Write a project zip (#37) to `path` in Pyodide's file system: the page's inputs, plus the latest results and their PDF report if `include_results`; returns `path`.
 
         `project_json` holds the config, the weather file ({text, filename, source}), the obstructed sky description
-        ({text, filename}), the photos ([{name, taken, view, path}], each JPEG written to `path` by the worker), the
+        ({text, filename}), the photos ([{name, taken, view, path}], each JPEG written to `path` by the worker), the AR
+        recording ({data, frame_paths}: the content of `recording.json` and the frames' JPEGs in the same order), the
         point cloud ({path, filename}) and an irradiation file loaded from a project ({text}); each may be missing.
         `include_results` is set by the page only if the latest result matches these inputs, so a project is always
         consistent. The PDF report needs matplotlib, which the worker loads first.
@@ -276,6 +294,13 @@ class BrowserSession:
                 contents[image_file] = Path(photo["path"])
                 entries.append({"name": photo["name"], "taken": photo["taken"], "view": photo["view"], "image_file": image_file})
             contents[PHOTOS_NAME] = to_json_text({FORMAT_VERSION_KEY: PHOTO_SET_FORMAT_VERSION, "kind": "photo_set", "photos": entries})
+        if recording := project.get("recording"):
+            data = check_recording(recording["data"], "AR recording")
+            frames = []
+            for number, (frame, frame_path) in enumerate(zip(data["frames"], recording["frame_paths"], strict=True), start=1):
+                frames.append({**frame, "file": frame_file_name(number)})
+                contents[frame_file_name(number)] = Path(frame_path)
+            contents[RECORDING_NAME] = to_json_text({**data, "frames": frames})
         if point_cloud := project.get("point_cloud"):
             name = project_file_name(POINT_CLOUD_STEM, point_cloud["filename"])
             contents[name] = Path(point_cloud["path"])
@@ -293,9 +318,10 @@ class BrowserSession:
     def load_project(self, path, directory, filename=""):
         """Read a project zip (#37) from `path` in Pyodide's file system; returns JSON with the files found, or null for missing ones.
 
-        Text files come as text (the config as dict); the photos and the point cloud are extracted into `directory`
-        and given by path, for the worker to pass on to the page. The session itself is not changed: the page loads
-        the files one by one, as if picked by hand. `has_results` tells whether the project holds results.
+        Text files come as text (the config as dict); the photos, the AR recording's frames and the point cloud are
+        extracted into `directory` and given by path (the recording as {data, frame_paths}), for the worker to pass on
+        to the page. The session itself is not changed: the page loads the files one by one, as if picked by hand.
+        `has_results` tells whether the project holds results.
         """
         source = filename or path
         try:
@@ -315,7 +341,7 @@ class BrowserSession:
                        "weather": {"text": text(weather_name), "filename": weather_details.get("original_filename") or weather_name, "source": weather_details.get("source") or "auto"} if weather_name else None,
                        "obstructed_sky": {"text": text(OBSTRUCTED_SKY_NAME), "filename": sky_details.get("original_filename") or OBSTRUCTED_SKY_NAME} if OBSTRUCTED_SKY_NAME in names else None,
                        "irradiation": {"text": text(IRRADIATION_NAME)} if IRRADIATION_NAME in names else None,
-                       "photos": [], "point_cloud": None, "has_results": any(name.startswith(RESULTS_DIRECTORY + "/") for name in names)}
+                       "photos": [], "recording": None, "point_cloud": None, "has_results": any(name.startswith(RESULTS_DIRECTORY + "/") for name in names)}
             if PHOTOS_NAME in names:
                 photo_set = json.loads(text(PHOTOS_NAME))
                 check_format_version(photo_set, PHOTO_SET_FORMAT_VERSION, "Photo set", f"{source}/{PHOTOS_NAME}")
@@ -324,6 +350,13 @@ class BrowserSession:
                         log.warning(f"{source}: photo {photo['name']!r} has no image {photo['image_file']} in the project; skipped")
                         continue
                     project["photos"].append({"name": photo["name"], "taken": photo["taken"], "view": photo["view"], "path": archive.extract(photo["image_file"], directory)})
+            if RECORDING_NAME in names:
+                data = check_recording(json.loads(text(RECORDING_NAME)), f"{source}/{RECORDING_NAME}")
+                missing = [frame["file"] for frame in data["frames"] if frame["file"] not in names]
+                if missing:
+                    log.warning(f"{source}: {len(missing)} frames of the AR recording missing ({', '.join(missing[:5])}); skipped")
+                    data["frames"] = [frame for frame in data["frames"] if frame["file"] in names]
+                project["recording"] = {"data": data, "frame_paths": [archive.extract(frame["file"], directory) for frame in data["frames"]]}
             if point_cloud_name := find_project_file(archive, POINT_CLOUD_STEM):
                 project["point_cloud"] = {"path": archive.extract(point_cloud_name, directory), "filename": manifest.get("point_cloud", {}).get("original_filename") or point_cloud_name}
         log.info(f"Project {source}: {', '.join(project['contents'])}")
