@@ -3,10 +3,9 @@
 // are not steps (#36); the status light stays in the top bar. Opening the results tab computes the results if they are
 // missing or out of date (inputs or form changed). The page state is in document.body.dataset.state: loading, ready, busy, computed or error (used by the smoke test and
 // the red/green status light); progress messages and timings go to the log at the bottom.
-// Loaded inputs, the photos, an AR recording and the form are kept in IndexedDB for the next visit (not the point cloud, which may be large); files can be saved and
-// loaded to move them between devices, one by one or all at once as a project zip (#37).
+// Loaded inputs, the photos and the form are kept in IndexedDB for the next visit (not the point cloud, which may be large); files can be saved and loaded to move them
+// between devices, one by one or all at once as a project zip (#37).
 
-import { arSupported, createArRecorder } from "./ar_recording.js";
 import { createSkyEditor } from "./sky_editor.js";
 import { createPanelMap } from "./panel_map.js";
 
@@ -24,7 +23,6 @@ const worker = new Worker(`worker.js${location.search}`, { type: "module" });
 const pendingCalls = new Map();
 let nextCallId = 0;
 let pythonReady = false;
-let arAvailable = false;             // this browser can make AR recordings (WebXR immersive-ar, #47)
 // Loaded inputs as file content, kept to re-parse (weather format change), to save as files and to store for the next visit.
 // The irradiation per sky patch is only kept to save it again, if a loaded project has it (the page computes its own).
 const inputs = { weather: null, sky: null, irradiation: null };        // {text, filename, source?}
@@ -129,7 +127,6 @@ function updateButtons() {
   for (const id of ["site-search", "weather-download", "config-save", "project-new", "project-save"]) element(id).disabled = !idle;
   element("lidar-compute").disabled = !idle || !element("lidar-file").files.length;
   element("camera-start").disabled = element("fov-calibrate").disabled = !idle || !editor.isStarted;
-  element("recording-start").disabled = !idle || !arAvailable;
   element("weather-save").disabled = !inputs.weather;
   element("sky-save").disabled = !inputs.sky;
   element("sky-clear").disabled = !idle || !inputs.sky;
@@ -414,21 +411,6 @@ const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => 
     remember("form", formValues());
   } });
 
-// AR video recording (#47): its frames are shown on the sky map; the recording is kept like the photos.
-const recorder = createArRecorder({ element, call, report, fail, whileBusy, editor,
-  site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }),
-  onRecorded: recordingMade, onChanged: () => remember("recording", recorder.recording) });
-
-// A new recording sets the site from its GPS position if the site is still empty (the distance to a set site is in the
-// recording's summary).
-async function recordingMade(data) {
-  if (!data.gps || numberOrNull("site-latitude") !== null || numberOrNull("site-longitude") !== null) return;
-  setSite(data.gps.latitude, data.gps.longitude);
-  report(`Site from the recording's GPS position: ${data.gps.latitude.toFixed(5)}, ${data.gps.longitude.toFixed(5)} (±${Math.round(data.gps.accuracy_m)} m)`);
-  await describeSite();
-  await recorder.refresh();
-}
-
 // The panel map (#38) is centred on the site (form, else the weather data's coordinates); panning it sets the site. The
 // place name (reverse search) and the sun paths of the sky editor follow once the map rests for a moment.
 let siteMovedTimer = null;
@@ -538,7 +520,7 @@ function projectFilename() {
   return `${place || "pv_yield"}_${new Date().toISOString().slice(0, 10)}.pvproject.zip`;
 }
 
-// Save all inputs that are there (config, weather, obstructed sky description, photos, AR recording, point cloud) as one zip, with
+// Save all inputs that are there (config, weather, obstructed sky description, photos, point cloud) as one zip, with
 // the results and the PDF report if they can be computed (computed now if out of date), so they match the inputs.
 async function saveProject() {
   let includeResults = false;
@@ -553,7 +535,7 @@ async function saveProject() {
   const project = { config: currentConfig(), weather: inputs.weather, obstructed_sky: inputs.sky, irradiation: inputs.irradiation, include_results: includeResults };
   const pointCloud = element("lidar-file").files[0] ?? null;
   report(`Saving the project${pointCloud ? ` with the point cloud ${pointCloud.name} (${format(pointCloud.size / 1e6, 1)} MB)` : ""} ...`);
-  saveFile(projectFilename(), await call("saveProject", project, await editor.photoFiles(), pointCloud, recorder.recording), "application/zip");
+  saveFile(projectFilename(), await call("saveProject", project, await editor.photoFiles(), pointCloud), "application/zip");
 }
 
 // Empty the inputs and set the form to the page's defaults (also in the browser's storage), e.g. before loading a project.
@@ -574,13 +556,12 @@ async function resetInputs() {
   element("weather-summary").textContent = "not loaded";
   element("sky-summary").textContent = NO_SKY_SUMMARY;
   await editor.setPhotos([]);
-  await recorder.setRecording(null);
   // The reset session forgot the start state of marking: start again from a free sky.
   if (editor.isStarted) await editor.reload();
   window.pvYieldApp.lastResult = null;
   Object.assign(results, { computedKey: null, attemptedKey: null, pendingPlots: null });
   showResultsMessage(NO_RESULTS_MESSAGE);
-  await Promise.all([remember("form", formValues()), remember("config", {}), remember("weather", null), remember("sky", null), remember("recording", null)]);
+  await Promise.all([remember("form", formValues()), remember("config", {}), remember("weather", null), remember("sky", null)]);
 }
 
 // Start a new project: empty inputs, the form at its defaults (also for the next visit).
@@ -604,11 +585,6 @@ async function loadProject(file) {
   if (project.weather) await loadWeather(project.weather.text, project.weather.filename, project.weather.source);
   if (project.obstructed_sky) await loadObstructedSky(project.obstructed_sky.text, project.obstructed_sky.filename);
   if (project.photos.length) await editor.setPhotos(project.photos);
-  if (project.recording) {
-    await recorder.setRecording({ data: project.recording.data, frames: project.recording.frames });
-    await remember("recording", recorder.recording);
-    element("ar-video").open = true;
-  }
   if (project.point_cloud) {
     // A file input can only be set through a DataTransfer; the point cloud is then used like a picked file.
     const transfer = new DataTransfer();
@@ -737,14 +713,13 @@ function updateResultsIfShown() {
 
 // Restore the inputs and form of the last visit, if stored.
 async function restoreStoredInputs() {
-  const [form, weather, sky, config, photos, recording] = await Promise.all([recall("form"), recall("weather"), recall("sky"), recall("config"), recall("photos"), recall("recording")]);
+  const [form, weather, sky, config, photos] = await Promise.all([recall("form"), recall("weather"), recall("sky"), recall("config"), recall("photos")]);
   if (config) importedConfig = config;
   setFormValues(form);
   if (weather) await loadWeather(weather.text, weather.filename, weather.source ?? "auto");
   if (sky) await loadObstructedSky(sky.text, sky.filename);
   if (photos?.length) await editor.setPhotos(photos);
-  if (recording) await recorder.setRecording(recording);
-  if (form || weather || sky || photos?.length || recording) report(`Restored the inputs of the last visit${photos?.length ? ` (${photos.length} photos)` : ""}${recording ? ` (AR recording, ${recording.frames.length} frames)` : ""}`);
+  if (form || weather || sky || photos?.length) report(`Restored the inputs of the last visit${photos?.length ? ` (${photos.length} photos)` : ""}`);
   updatePvgisLink();
   await editor.reload();
 }
@@ -820,8 +795,6 @@ element("photo-file").addEventListener("change", async event => {
   if (file) await whileBusy(() => editor.loadPhotoFile(file));
   event.target.value = "";
 });
-// The AR session starts right in the tap's handler: the browser asks for camera access only then.
-element("recording-start").addEventListener("click", () => whileBusy(recorder.start));
 element("photos-save").addEventListener("click", () => {
   if (editor.hasPhotos) saveFile("pv_yield_photos.json", editor.photoSetText(), "application/json");
   else report("No photos to save");
@@ -862,12 +835,6 @@ element("export-pdf").addEventListener("click", () => whileBusy(async () => save
 
 renderCompareRows();
 showTab(location.hash.replace(/^#\/?/, ""));
-arSupported().then(supported => {
-  arAvailable = supported;
-  element("ar-support").textContent = supported ? "This browser can record (WebXR with AR)."
-    : "Recording needs Chrome on Android with ARCore (WebXR with AR), which this browser does not offer (e.g. iPhones, computers). A recording from a loaded project is shown here.";
-  updateButtons();
-});
 try {
   updateButtons();
   const versions = await call("init");
