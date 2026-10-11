@@ -12,6 +12,8 @@ dependencies = ["numpy", "scipy", "pandas", "pvlib", "pyyaml", "rich", "bokeh", 
 
 [project.optional-dependencies]
 test = ["pytest"]
+### Point cloud from AR recordings (#48); in the browser, Pyodide's bundled OpenCV is loaded only for this step.
+ar_video = ["opencv-python"]
 
 [project.scripts]
 pv-yield-estimator = "pv_yield_estimator.cli.main:main"

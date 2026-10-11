@@ -16,6 +16,22 @@ sky_obstruction:
     min_points: 10                  ### minimum number of points in an obstructed sky patch
   photo:
     fov_deg: 65                     ### browser app: camera field of view across the photo's longer side, default for new photos
+  ar_video:                         ### point cloud from an AR recording (#48); defaults shown
+    points_from: auto               ### depth (ARCore's depth maps, if recorded), features (triangulation), auto: depth if recorded
+    max_depth_m: 5.0                ### depth maps: farther depths dropped ...
+    voxel_m: 0.03                   ### ... points merged into cubes of this size, seen in at least min_depth_frames: 2 frames
+    feature: orb                    ### orb or sift
+    max_features: 2000              ### per frame, spread over a grid of 6 × 3 cells (feature_grid), after local contrast enhancement
+    max_image_px: 960               ### frames downscaled to this longer side
+    max_turn_rate_deg_s: 20         ### frames taken while turning faster are blurred and skipped
+    min_baseline_m: 0.05            ### frame pairs: at least this far apart (short for near objects) ...
+    max_pairs_per_frame: 8          ### ... with viewing directions at most half the field of view apart (max_view_angle_deg)
+    max_pose_error_px: 20           ### matches near the epipolar line of the recorded poses, then checked against the images (ransac_px: 1.5)
+    adjust_poses: true              ### refine the recorded poses from the images (bundle adjustment) ...
+    rotation_prior_deg: 1.0         ### ... staying within about this of the recorded orientation ...
+    position_prior_m: 0.05          ### ... and position; frames needing more than 3° or 0.3 m are dropped
+    min_triangulation_angle_deg: 2.0  ### points need this much parallax ...
+    min_distance_m: 0.1             ### ... and this distance from the cameras
 panel:
   tilt_deg: 15                      ### null (or left out): optimized
   azimuth_deg: 180                  ### compass: 180 = south; null (or left out): optimized

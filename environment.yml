@@ -15,4 +15,7 @@ dependencies:
   - matplotlib
   - contourpy
   - bokeh=3.9
+  ### Point cloud from AR recordings (#48): Pyodide bundles OpenCV 4.11, which conda-forge doesn't build for Python 3.14; 4.13 is the closest.
+  - py-opencv=4.13
+  - pillow
   - pytest

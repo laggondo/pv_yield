@@ -138,9 +138,9 @@
       </details>
       <details id="ar-video" name="sky-source">
         <summary>Record an AR video (Android, Chrome)</summary>
-        <p class="hint">Record a short video while moving the phone around, e.g. along the balcony: the phone tracks its camera in metres (ARCore), and the frames with their camera positions will give a point cloud of the surroundings in a later version, from which the obstruction is computed for any panel position. For now, the recording is stored (browser, project) and shown on the sky map.</p>
+        <p class="hint">Record a short video while moving the phone around, e.g. along the balcony: the phone tracks its camera in metres (ARCore), and the frames with their camera positions give a point cloud of the surroundings (for now with the command-line program), from which the obstruction will be computed for any panel position. Here, the recording is stored (browser, project) and shown on the sky map.</p>
         <p class="summary" id="ar-support">Checking whether this browser can record ...</p>
-        <p class="hint">Start at a well-defined spot that is easy to describe and find again, e.g. a corner of the balcony at railing height: it is the reference position, and panel positions will be given relative to it. Then move the phone slowly <strong>sideways and up and down</strong> (not only turn it), looking at the surroundings and the sky; Stop ends the recording.</p>
+        <p class="hint">Start at a well-defined spot that is easy to describe and find again, e.g. a corner of the balcony at railing height: it is the reference position, and panel positions will be given relative to it. Then move the phone slowly <strong>sideways and up and down</strong> (not only turn it), looking at the surroundings and the sky. <strong>Turn slowly</strong>: fast turns blur the frames, so frames are only kept while the phone turns slower than 15°/s (about a quarter turn in 6 s) and moves slower than 0.5 m/s; the status line says when it is too fast. Where the phone offers it, ARCore's depth maps are stored with the frames for a dense point cloud (status line: "depth ok"). Stop ends the recording.</p>
         <label>Reference position (what the spot is; optional) <input type="text" id="recording-reference" placeholder="e.g. south-west corner of the balcony, top of the railing"></label>
         <div class="buttons">
           <button id="recording-start" disabled>Start recording</button>
@@ -208,7 +208,7 @@
 <!-- Shown over the camera image during an AR recording (WebXR DOM overlay). -->
 <div id="ar-overlay" hidden>
   <div id="ar-status"></div>
-  <div id="ar-hint">Move the phone slowly sideways and up and down, not only turn it.</div>
+  <div id="ar-hint">Move the phone slowly sideways and up and down, not only turn it. Turn slowly (frames are only kept below 15°/s).</div>
   <button id="ar-stop">Stop</button>
 </div>
 

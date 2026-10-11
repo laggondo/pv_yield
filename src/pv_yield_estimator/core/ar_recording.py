@@ -181,6 +181,20 @@ def projection_diagnostics(frame):
             "image_aspect": float(width / height), "projection_aspect": float(matrix[5] / matrix[0])}
 
 
+def recording_heading(recording, heading_offset_deg=None, estimate=None):
+    """The heading offset to use for a recording, with its source: the given one (set by hand), else the recording's stored one if set by hand, else the estimate from the compass (0 without readings).
+
+    `estimate` is the result of `heading_offset_from_compass`, computed here if not given. Returns a dict with
+    `heading_offset_deg` and `heading_source` (manual, compass, compass_before_after or none).
+    """
+    if heading_offset_deg is None and recording.get("heading_source") == "manual":
+        heading_offset_deg = recording.get("heading_offset_deg")
+    if heading_offset_deg is not None:
+        return {"heading_offset_deg": float(heading_offset_deg) % 360.0, "heading_source": "manual"}
+    estimate = estimate or heading_offset_from_compass(recording)
+    return {"heading_offset_deg": estimate["heading_offset_deg"] or 0.0, "heading_source": estimate["source"]}
+
+
 def recording_summary(recording, heading_offset_deg=None, site_latitude=None, site_longitude=None):
     """Key figures of a recording for the inspection view, its frames as camera views and its camera path.
 
@@ -192,12 +206,7 @@ def recording_summary(recording, heading_offset_deg=None, site_latitude=None, si
     """
     frames = recording["frames"]
     estimate = heading_offset_from_compass(recording)
-    if heading_offset_deg is None and recording.get("heading_source") == "manual":
-        heading_offset_deg = recording.get("heading_offset_deg")
-    if heading_offset_deg is not None:
-        heading = {"heading_offset_deg": float(heading_offset_deg) % 360.0, "heading_source": "manual"}
-    else:
-        heading = {"heading_offset_deg": estimate["heading_offset_deg"] or 0.0, "heading_source": estimate["source"]}
+    heading = recording_heading(recording, heading_offset_deg, estimate)
     views = frame_camera_views(recording, heading["heading_offset_deg"])
     path = camera_path(recording, heading["heading_offset_deg"])
     steps = np.linalg.norm(np.diff(path, axis=0), axis=1) if len(path) > 1 else np.zeros(0)

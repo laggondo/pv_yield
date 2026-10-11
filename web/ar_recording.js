@@ -7,13 +7,20 @@
 // sky map like photos. The recording also notes how things went on the phone (diagnostics: image size, read-back time,
 // compass events during the session, ...), for the feasibility checks of #47.
 // After Stop, and when a recording is loaded (project, browser storage), the section shows an inspection: key figures,
-// the camera path from above, two of the frames and the frames on the sky map. The point cloud follows in #48.
+// the camera path from above, two of the frames and the frames on the sky map. The point cloud is computed in Python (#48).
+// Where the phone offers it (WebXR depth sensing, from ARCore's Depth API), each keyframe also stores ARCore's depth map
+// (a distance per pixel at low resolution), inline in recording.json as base64, for a dense point cloud.
 
 const RECORDING_FORMAT_VERSION = 1;
 const MAX_FRAMES = 300;
 const MIN_MOVE_M = 0.05;             // a new keyframe when the camera moved more than this ...
 const MIN_TURN_DEG = 5;              // ... or turned more than this since the last one,
-const MIN_INTERVAL_S = 0.25;         // but at most 4 per second
+const MIN_INTERVAL_S = 0.25;         // but at most 4 per second,
+// and only while the phone moves slowly: faster turning or moving blurs the image (#48: frames taken while turning at
+// 25–80°/s had no usable features). Speeds are smoothed over about SPEED_SMOOTHING_S.
+const MAX_TURN_RATE_DEG_S = 15;
+const MAX_SPEED_M_S = 0.5;
+const SPEED_SMOOTHING_S = 0.1;
 const JPEG_QUALITY = 0.85;
 const STATUS_INTERVAL_MS = 200;
 const COMPASS_AFTER_WAIT_MS = 2000;  // after the session, wait this long for a compass reading
@@ -21,6 +28,8 @@ const SKY_MAP_FRAME_PX = 480;        // longer side of the frames as merged onto
 const SKY_MAP_MAX_FRAMES = 120;      // frames on the sky map, chosen to look in different directions ...
 const SKY_MAP_MIN_TURN_DEG = 3;      // ... at least this far apart
 const PATH_PLOT_PX = 600;
+// Depth maps on the CPU, as 16-bit integers (scaled by rawValueToMeters) or 32-bit floats.
+const DEPTH_SENSING = { usagePreference: ["cpu-optimized"], dataFormatPreference: ["luminance-alpha", "float32"] };
 
 const frameFileName = number => `recording/frame_${number}.jpg`;
 const degrees = radians => radians * 180 / Math.PI;
@@ -107,6 +116,13 @@ function currentGps() {
   });
 }
 
+// Base64 text of bytes (in chunks: String.fromCharCode takes a limited number of arguments).
+function base64(bytes) {
+  let text = "";
+  for (let start = 0; start < bytes.length; start += 0x8000) text += String.fromCharCode(...bytes.subarray(start, start + 0x8000));
+  return btoa(text);
+}
+
 const mean = values => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 const timingStats = values => values.length ? { mean: Math.round(mean(values)), max: Math.round(Math.max(...values)), n: values.length } : null;
 
@@ -157,8 +173,28 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
     return { ...angles, time_s: relativeTime(time) };
   }
 
+  // Smoothed turn rate (°/s) and speed (m/s) of the camera from the previous XR frame's pose.
+  function updateMotion(transform, time) {
+    const previous = active.previousPose;
+    active.previousPose = { position: { ...transform.position }, orientation: { x: transform.orientation.x, y: transform.orientation.y, z: transform.orientation.z, w: transform.orientation.w }, time };
+    if (!previous || time <= previous.time) return;
+    const dt = (time - previous.time) / 1000;
+    const p = transform.position, q = previous.position;
+    const weight = Math.min(1, dt / SPEED_SMOOTHING_S);
+    active.turnRate += weight * (turnDeg(transform.orientation, previous.orientation) / dt - active.turnRate);
+    active.speed += weight * (Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) / dt - active.speed);
+  }
+
+  function tooFast() {
+    return active.turnRate > MAX_TURN_RATE_DEG_S || active.speed > MAX_SPEED_M_S;
+  }
+
   function isKeyframe(transform, time) {
     const last = active.lastKept;
+    if (tooFast()) {
+      active.framesTooFast++;
+      return false;
+    }
     if (!last) return true;
     if ((time - last.time) / 1000 < MIN_INTERVAL_S) return false;
     const { position: p, orientation } = transform;
@@ -166,7 +202,28 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
   }
 
   // Keep a frame: read the camera image back, note the pose; the JPEG is encoded in the background.
-  function keepFrame(view, time, emulatedPosition) {
+  // ARCore's depth map for the view, if the session has depth sensing and one is available: size, data format, the scale
+  // of the raw values to metres, the transform from normalized view to normalized depth buffer coordinates and the
+  // data (base64). Read now: the data is only valid during this XR frame.
+  function depthEntry(frame, view) {
+    if (!active.depthFormat) return null;
+    let depth;
+    try {
+      depth = frame.getDepthInformation(view);
+    } catch (error) {
+      active.depthError = String(error.message ?? error);
+      return null;
+    }
+    if (!depth) {
+      active.framesWithoutDepth++;
+      return null;
+    }
+    active.depthSize = `${depth.width} x ${depth.height}`;
+    return { width: depth.width, height: depth.height, format: active.depthFormat, raw_value_to_meters: depth.rawValueToMeters,
+      norm_depth_buffer_from_norm_view: Array.from(depth.normDepthBufferFromNormView.matrix), data_base64: base64(new Uint8Array(depth.data)) };
+  }
+
+  function keepFrame(frame, view, time, emulatedPosition) {
     const { width, height } = view.camera;
     const start = performance.now();
     const texture = active.binding.getCameraImage(view.camera);
@@ -174,7 +231,8 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
     active.readbackMs.push(performance.now() - start);
     const { position: p, orientation: q } = view.transform;
     active.frames.push({ file: frameFileName(active.frames.length + 1), time_s: relativeTime(time), position_m: [p.x, p.y, p.z], orientation_xyzw: [q.x, q.y, q.z, q.w], emulated_position: emulatedPosition,
-      width, height, projection_matrix: Array.from(view.projectionMatrix), screen_angle_deg: screenAngle(), compass: compassEntry(active.compass) });
+      width, height, projection_matrix: Array.from(view.projectionMatrix), screen_angle_deg: screenAngle(), compass: compassEntry(active.compass),
+      turn_rate_deg_s: Math.round(10 * active.turnRate) / 10, speed_m_s: Math.round(1000 * active.speed) / 1000, depth: depthEntry(frame, view) });
     const encodeStart = performance.now();
     active.blobs.push(encodeJpeg(pixels, width, height).then(blob => {
       active.encodeMs.push(performance.now() - encodeStart);
@@ -196,8 +254,12 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
   function showRecordingStatus(time, baseline, trackingLost) {
     if (time - active.lastStatus < STATUS_INTERVAL_MS) return;
     active.lastStatus = time;
+    const fast = trackingLost === false && tooFast();
     element("ar-status").textContent = `${active.frames.length} frames · moved ${format(baseline, 2)} m · tracking ${trackingLost === null ? "starting" : trackingLost ? "LOST" : "ok"}`
+      + ` · depth ${active.depthFormat ? (active.depthSize ? "ok" : "waiting") : "none"}`
+      + (fast ? ` · TOO FAST (${active.turnRate > MAX_TURN_RATE_DEG_S ? `turning ${Math.round(active.turnRate)}°/s` : `moving ${format(active.speed, 2)} m/s`}): slow down` : "")
       + (active.frames.length >= MAX_FRAMES ? ` · limit of ${MAX_FRAMES} frames reached: stop now` : "");
+    element("ar-status").classList.toggle("warning", fast);
   }
 
   function onXrFrame(time, frame) {
@@ -213,9 +275,10 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
     if (!pose) return showRecordingStatus(time, 0, null);
     const view = pose.views[0];
     const baseline = extendPath(view.transform.position);
+    if (!pose.emulatedPosition) updateMotion(view.transform, time);
     if (pose.emulatedPosition) active.trackingLostFrames++;
     if (!view.camera) active.framesWithoutCamera++;
-    else if (active.frames.length < MAX_FRAMES && isKeyframe(view.transform, time)) keepFrame(view, time, pose.emulatedPosition);
+    else if (active.frames.length < MAX_FRAMES && isKeyframe(view.transform, time)) keepFrame(frame, view, time, pose.emulatedPosition);
     showRecordingStatus(time, baseline, pose.emulatedPosition);
   }
 
@@ -223,20 +286,33 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
   async function start() {
     const overlay = element("ar-overlay");
     active = { started: false, ended: false, compass: null, compassBefore: null, compassAfter: null, compassEvents: 0, orientationEvents: 0, frames: [], blobs: [], lastKept: null, xrFrames: 0,
-      framesWithoutCamera: 0, trackingLostFrames: 0, readbackMs: [], encodeMs: [], lastStatus: 0, box: { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } }, contextLost: false };
+      framesWithoutCamera: 0, trackingLostFrames: 0, readbackMs: [], encodeMs: [], lastStatus: 0, box: { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } }, contextLost: false,
+      previousPose: null, turnRate: 0, speed: 0, framesTooFast: 0, depthFormat: null, depthError: null, depthSize: null, framesWithoutDepth: 0 };
     window.addEventListener("deviceorientationabsolute", onCompass);
     window.addEventListener("deviceorientation", onOrientation);
     overlay.hidden = false;
     element("ar-status").textContent = "Starting ...";
     let session;
+    const options = { requiredFeatures: ["camera-access", "local"], optionalFeatures: ["dom-overlay", "depth-sensing"], domOverlay: { root: overlay }, depthSensing: DEPTH_SENSING };
     try {
-      session = await navigator.xr.requestSession("immersive-ar", { requiredFeatures: ["camera-access", "local"], optionalFeatures: ["dom-overlay"], domOverlay: { root: overlay } });
+      try {
+        session = await navigator.xr.requestSession("immersive-ar", options);
+      } catch (error) {
+        // A browser that doesn't know the depth options rejects them (TypeError): record without depth.
+        if (!(error instanceof TypeError)) throw error;
+        active.depthError = `depth sensing options rejected: ${error.message}`;
+        session = await navigator.xr.requestSession("immersive-ar", { ...options, optionalFeatures: ["dom-overlay"], depthSensing: undefined });
+      }
     } catch (error) {
       overlay.hidden = true;
       removeListeners();
       throw new Error(`Could not start the AR session: ${error.message ?? error} (it needs Chrome on Android with Google Play Services for AR, and access to the camera)`);
     }
     Object.assign(active, { session, started: true, startTime: performance.now(), created: new Date().toISOString(), gps: currentGps() });
+    if (session.enabledFeatures?.includes("depth-sensing")) {
+      if (session.depthUsage === "cpu-optimized") active.depthFormat = session.depthDataFormat;
+      else active.depthError = `depth sensing granted for ${session.depthUsage}, not on the CPU`;
+    }
     session.addEventListener("end", () => whileBusy(finish));
     try {
       const canvas = document.createElement("canvas");
@@ -259,7 +335,7 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
     active.diagnostics = { dom_overlay: session.domOverlayState?.type ?? "not granted", environment_blend_mode: session.environmentBlendMode ?? null,
       webgl: typeof WebGL2RenderingContext !== "undefined" && active.gl instanceof WebGL2RenderingContext ? "webgl2" : "webgl", compass_event: "ondeviceorientationabsolute" in window };
     session.requestAnimationFrame(onXrFrame);
-    report(`AR session started (DOM overlay: ${active.diagnostics.dom_overlay}, ${active.diagnostics.webgl})`);
+    report(`AR session started (DOM overlay: ${active.diagnostics.dom_overlay}, ${active.diagnostics.webgl}, depth maps: ${active.depthFormat ?? `no${active.depthError ? ` (${active.depthError})` : ""}`})`);
   }
 
   function stop() {
@@ -300,8 +376,10 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
       camera: { width: frames[0].width, height: frames[0].height, projection_matrix: frames[0].projection_matrix },
       diagnostics: { ...active.diagnostics, camera_image: `${frames[0].width} x ${frames[0].height}`, readback_ms: timingStats(active.readbackMs), encode_ms: timingStats(active.encodeMs),
         jpeg_kb: Math.round(mean(blobs.map(blob => blob.size)) / 1024), xr_frames: active.xrFrames, xr_frames_per_s: Math.round(active.xrFrames / durationS),
-        xr_frames_without_camera: active.framesWithoutCamera, xr_frames_tracking_lost: active.trackingLostFrames, compass_events_during_session: active.compassEvents,
+        xr_frames_without_camera: active.framesWithoutCamera, xr_frames_tracking_lost: active.trackingLostFrames, xr_frames_too_fast: active.framesTooFast,
+        max_turn_rate_deg_s: MAX_TURN_RATE_DEG_S, max_speed_m_s: MAX_SPEED_M_S, compass_events_during_session: active.compassEvents,
         orientation_events_during_session: active.orientationEvents, compass_rate_per_s: Math.round(active.compassEvents / durationS), webgl_context_lost: active.contextLost,
+        depth_sensing: { format: active.depthFormat, size: active.depthSize, frames_with_depth: frames.filter(frame => frame.depth).length, xr_frames_without_depth: active.framesWithoutDepth, error: active.depthError },
         max_frames_reached: frames.length >= MAX_FRAMES, gps_error: gps.error ?? null, duration_s: Math.round(10 * durationS) / 10,
         // As "moved" in the status line: extent of the camera path over all poses, not only the kept frames.
         moved_all_poses_m: Math.hypot(active.box.max.x - active.box.min.x, active.box.max.y - active.box.min.y, active.box.max.z - active.box.min.z) },

@@ -94,6 +94,7 @@ caption { text-align: left; font-size: 0.9rem; color: #444; padding-bottom: 4px;
 #ar-overlay { position: fixed; inset: 0; z-index: 30; pointer-events: none; }
 #ar-status, #ar-hint { position: absolute; left: 8px; right: 8px; color: #fff; text-shadow: 0 0 3px #000; font-size: 1rem; }
 #ar-status { top: 12px; font-weight: bold; }
+#ar-status.warning { color: #ffb347; }
 #ar-hint { top: 40px; font-size: 0.9rem; }
 #ar-stop { position: absolute; left: 50%; bottom: 32px; transform: translateX(-50%); pointer-events: auto; height: 56px; padding: 0 32px; border-radius: 28px; background: #c62828; border-color: #fff; color: #fff; font-weight: bold; font-size: 1.1rem; }
 #recording-path { display: block; width: 100%; max-width: 320px; aspect-ratio: 1; border: 1px solid #ddd; border-radius: 6px; margin: 8px 0; }
