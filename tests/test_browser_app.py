@@ -533,3 +533,58 @@ def test_browser_page_computes_sample(tmp_path, session):
             print("\n".join(messages))
             browser.close()
     assert key_figures == pytest.approx(expected, rel=1e-6)
+
+
+def test_session_photo_groups_and_interpolation(tmp_path):
+    """Photo groups (#55): each has its own description; with two, the results use the obstruction interpolated at the panel position (#54); a project keeps the groups and their photos."""
+    from pv_yield_estimator.core.sky import SkyDiscretization
+    from synthetic_scene import garage_scene
+    sky, scene = SkyDiscretization.from_node_count(200), garage_scene()
+    texts = {name: json.dumps(scene.obstructed_sky(sky, position).to_dict()) for name, position in {"A": (0.0, 0.0, 0.0), "B": (6.0, 0.0, 0.0)}.items()}
+    session = BrowserSession()
+    session.load_weather(WEATHER_PATH.read_text(encoding="utf-8"), WEATHER_PATH.name, "pvgis_tmy")
+    assert json.loads(session.load_obstructed_sky(texts["A"], "a.json"))["group"] == "A"
+    assert json.loads(session.select_group("B")) is None
+    assert json.loads(session.start_editing(500))["obstructed"] == [0] * sky.n_patches       ### a new group starts free, on the other groups' discretization
+    session.load_obstructed_sky(texts["B"], "b.json")
+    with pytest.raises(ValueError, match="same resolution"):
+        session.load_obstructed_sky(SKY_PATH.read_text(encoding="utf-8"), SKY_PATH.name)
+    groups = [{"name": "A", "offset_m": [0, 0, 0]}, {"name": "B", "offset_m": [6, 0, 0]}]
+    config = lambda panel: {"panel": PANEL, "sky_obstruction": {"groups": groups, "panel_position_m": panel}, "simulation": {"n_sky_nodes": 200}}
+    at = {name: json.loads(session.compute(json.dumps(config(position))))["key_figures"] for name, position in {"A": [0, 0, 0], "middle": [3, 0, 0], "B": [6, 0, 0]}.items()}
+    assert at["A"]["sky_view_factor_horizontal"] == pytest.approx(scene.obstructed_sky(sky, (0, 0, 0)).sky_view_factor())
+    assert at["B"]["sky_view_factor_horizontal"] == pytest.approx(scene.obstructed_sky(sky, (6, 0, 0)).sky_view_factor())
+    assert at["A"]["sky_view_factor_horizontal"] < at["middle"]["sky_view_factor_horizontal"] < at["B"]["sky_view_factor_horizontal"]
+    preview = json.loads(session.panel_sky(json.dumps(config([3, 0, 0]))))
+    assert preview["source_group"] == "A" and len(preview["obstructed"]) == sky.n_patches and any(region["distance_m"] for region in preview["regions"])
+    assert json.loads(session.panel_sky(json.dumps(config([3, 0, 0]) | {"sky_obstruction": {}}))) is not None       ### B without a position sits at A's
+    ### Project: both groups' descriptions and the photos with their groups; loading gives them back.
+    photo_path = tmp_path / "photo.jpg"
+    photo_path.write_bytes(b"\xff\xd8 not really a JPEG")
+    view = {"azimuth_deg": 180.0, "elevation_deg": 20.0, "roll_deg": 0.0, "fov_deg": 65.0, "width": 400, "height": 300}
+    project = {"config": config([3, 0, 0]), "groups": [{"name": "A", "obstructed_sky": {"text": texts["A"], "filename": "a.json"}}, {"name": "B", "obstructed_sky": {"text": texts["B"], "filename": "b.json"}}, {"name": "C", "obstructed_sky": None}],
+               "photos": [{"name": "Photo 1", "taken": "2026-10-12T10:00:00Z", "view": view, "group": "B", "path": str(photo_path)}]}
+    project_path = session.save_project(json.dumps(project), str(tmp_path / "groups.zip"))
+    with zipfile.ZipFile(project_path) as archive:
+        assert {"obstructed_sky.json", "obstructed_sky_B.json", "photos.json"} <= set(archive.namelist()) and json.loads(archive.read("photos.json"))["format_version"] == 2
+    loaded = json.loads(BrowserSession().load_project(project_path, str(tmp_path / "files")))
+    assert [(group["name"], (group["obstructed_sky"] or {}).get("filename")) for group in loaded["groups"]] == [("A", "a.json"), ("B", "b.json"), ("C", None)]
+    assert loaded["groups"][1]["obstructed_sky"]["text"] == texts["B"] and loaded["obstructed_sky"]["text"] == texts["A"] and loaded["photos"][0]["group"] == "B"
+    assert loaded["config"]["sky_obstruction"]["groups"] == groups
+    ### Deleting a group: its description is gone; group A is emptied instead of deleted.
+    session.delete_group("B")
+    assert list(session.group_skies) == ["A"] and session.active_group == "A"
+    session.delete_group("A")
+    assert session.group_skies == {"A": None}
+
+
+def test_session_older_project_loads_as_group_a(tmp_path):
+    """A project from before the photo groups (photo set version 1, one obstructed sky description) loads as group A."""
+    from pv_yield_estimator.project import write_project_zip
+    view = {"azimuth_deg": 180.0, "elevation_deg": 20.0, "roll_deg": 0.0, "fov_deg": 65.0, "width": 400, "height": 300}
+    photos = {"format_version": 1, "kind": "photo_set", "photos": [{"name": "Photo 1", "taken": "2026-10-09T10:00:00Z", "view": view, "image_file": "photos/photo_1.jpg"}]}
+    path = tmp_path / "old.zip"
+    write_project_zip(path, {"config.yaml": "format_version: 1\n", "obstructed_sky.json": SKY_PATH.read_text(encoding="utf-8"), "photos.json": json.dumps(photos), "photos/photo_1.jpg": b"\xff\xd8"},
+                      obstructed_sky={"file": "obstructed_sky.json", "original_filename": "sample.json"})
+    loaded = json.loads(BrowserSession().load_project(str(path), str(tmp_path / "files")))
+    assert [group["name"] for group in loaded["groups"]] == ["A"] and loaded["groups"][0]["obstructed_sky"]["filename"] == "sample.json" and loaded["photos"][0]["group"] == "A"

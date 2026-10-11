@@ -25,6 +25,7 @@ from pv_yield_estimator.core.irradiation import compute_patch_irradiation, sun_p
 from pv_yield_estimator.core.obstruction_methods import sky_obstruction_method
 from pv_yield_estimator.core.panel_yield import YieldEstimator
 from pv_yield_estimator.core.photo import CameraView, camera_orientation_from_device
+from pv_yield_estimator.core.position_interpolation import PositionInterpolation, obstructed_sky_for_panel, photo_groups
 from pv_yield_estimator.core.sky import ObstructedSky, SkyDiscretization
 from pv_yield_estimator.core.weather import distance_km, load_weather, resolve_site
 from pv_yield_estimator.core.weather_download import parse_site_name, parse_site_search, pvgis_tmy_url, site_name_url, site_search_url, weather_download_candidates
@@ -36,7 +37,9 @@ from pv_yield_estimator.project import (CONFIG_NAME, IRRADIATION_NAME, MANIFEST_
 log = logging.getLogger(__name__)
 
 ### Photo sets as saved by the page (web/sky_editor.js); in a project, `image_file` names the JPEG in the zip instead of an inline `image`.
-PHOTO_SET_FORMAT_VERSION = 1
+### Version 2 adds the photo group of each photo (#55); photos of version 1 belong to group A.
+PHOTO_SET_FORMAT_VERSION = 2
+FIRST_GROUP = "A"
 
 
 def versions():
@@ -92,21 +95,70 @@ def projected_polylines(camera, directions):
     return [np.round(pixels[start:end], 1).tolist() for start, end in piece_bounds]
 
 
+def group_sky_file_name(name):
+    """File name of a photo group's obstructed sky description in a project: obstructed_sky.json for group A (as in projects without groups), obstructed_sky_<name>.json for the others."""
+    return OBSTRUCTED_SKY_NAME if name == FIRST_GROUP else OBSTRUCTED_SKY_NAME.replace(".json", f"_{name}.json")
+
+
 class BrowserSession:
-    """State of the browser app: the loaded weather data and obstructed sky description, the cached irradiation per sky patch and the latest result."""
+    """State of the browser app: the loaded weather data, the photo groups' obstructed sky descriptions, the cached irradiation per sky patch and the latest result.
+
+    Each photo group (#55, named A, B, C, ...) has its own obstructed sky description (loaded, computed from LiDAR or
+    marked by hand), or none yet; loading, computing, marking and saving work on the active group. With several
+    groups, the results use the obstruction interpolated at the panel position (#54).
+    """
 
     def __init__(self):
         self.weather = None
-        self.obstructed_sky = None
+        self.group_skies = {FIRST_GROUP: None}
+        self.active_group = FIRST_GROUP
+        self.interpolator = None
+        self.interpolator_key = None
         self.irradiation = None
         self.irradiation_key = None
         self.last = None
         self.editor_base = None
+        self.editor_group = None
         self.editor_sun_paths = []
 
     def reset(self):
         """Forget the loaded inputs, the cached irradiation and the latest result, e.g. before loading a project."""
         self.__init__()
+
+    @property
+    def obstructed_sky(self):
+        """The active photo group's obstructed sky description, or None."""
+        return self.group_skies[self.active_group]
+
+    @obstructed_sky.setter
+    def obstructed_sky(self, obstructed_sky):
+        self.group_skies[self.active_group] = obstructed_sky
+
+    def select_group(self, name):
+        """Make a photo group the active one (created without a description if new); returns its JSON summary (null without a description)."""
+        self.group_skies.setdefault(str(name), None)
+        self.active_group = str(name)
+        return json.dumps(self.sky_summary(self.obstructed_sky) if self.obstructed_sky is not None else None)
+
+    def delete_group(self, name):
+        """Forget a photo group and its description; group A stays (it is emptied instead). The active group becomes A if it was the deleted one."""
+        if name == FIRST_GROUP:
+            self.group_skies[FIRST_GROUP] = None
+        else:
+            self.group_skies.pop(name, None)
+        if self.active_group not in self.group_skies:
+            self.active_group = FIRST_GROUP
+
+    def sky_summary(self, obstructed_sky):
+        """Summary of an obstructed sky description for the page."""
+        metadata = obstructed_sky.metadata
+        return {"n_nodes": len(obstructed_sky.sky.nodes), "n_sky_nodes": obstructed_sky.sky.node_count_setting(), "n_patches": obstructed_sky.sky.n_patches, "n_obstructed": int(np.count_nonzero(obstructed_sky.obstructed)),
+                "obstructed_solid_angle_fraction": obstructed_sky.obstructed_solid_angle_fraction(), "sky_view_factor_horizontal": obstructed_sky.sky_view_factor(),
+                "method": metadata.get("method", ""), "created": metadata.get("created", ""), "input_file": metadata.get("input_file", ""), "group": self.active_group}
+
+    def common_sky(self):
+        """The sky discretization of the photo groups' descriptions (they all share one), or None if no group has a description."""
+        return next((sky.sky for sky in self.group_skies.values() if sky is not None), None)
 
     def load_weather(self, content, filename="", source="auto"):
         """Parse a weather file's content with the given weather source (auto: detected); returns a JSON summary for the page."""
@@ -118,14 +170,19 @@ class BrowserSession:
                            "n_hours": len(self.weather.hourly), "annual_ghi_kwh_m2": float(annual["ghi"]), "annual_dhi_kwh_m2": float(annual["dhi"]), "annual_dni_kwh_m2": float(annual["dni"])})
 
     def set_obstructed_sky(self, obstructed_sky):
-        """Use an obstructed sky description; returns a JSON summary for the page."""
+        """Use an obstructed sky description for the active photo group; returns a JSON summary for the page.
+
+        All groups share one sky discretization (the interpolation compares their patches), so a description on
+        another one is refused while other groups have descriptions.
+        """
+        for name, other in self.group_skies.items():
+            if name != self.active_group and other is not None and not other.sky.same_as(obstructed_sky.sky):
+                raise ValueError(f"Photo group {self.active_group}: the obstructed sky description has {obstructed_sky.sky.n_patches} sky patches, but group {name}'s has {other.sky.n_patches}; "
+                                 "all groups need the same resolution (sky nodes)")
         if self.irradiation is not None and not self.irradiation.sky.same_as(obstructed_sky.sky):
             self.irradiation = None
         self.obstructed_sky = obstructed_sky
-        metadata = obstructed_sky.metadata
-        return json.dumps({"n_nodes": len(obstructed_sky.sky.nodes), "n_sky_nodes": obstructed_sky.sky.node_count_setting(), "n_patches": obstructed_sky.sky.n_patches, "n_obstructed": int(np.count_nonzero(obstructed_sky.obstructed)),
-                           "obstructed_solid_angle_fraction": obstructed_sky.obstructed_solid_angle_fraction(), "sky_view_factor_horizontal": obstructed_sky.sky_view_factor(),
-                           "method": metadata.get("method", ""), "created": metadata.get("created", ""), "input_file": metadata.get("input_file", "")})
+        return json.dumps(self.sky_summary(obstructed_sky))
 
     def load_obstructed_sky(self, text, filename=""):
         """Parse an obstructed sky description (JSON text, as written by the CLI or saved from this page); returns a JSON summary."""
@@ -150,12 +207,14 @@ class BrowserSession:
         return to_json_text(self.obstructed_sky.to_dict())
 
     def start_editing(self, n_sky_nodes=500, latitude=None, longitude=None):
-        """Start marking obstructed sky patches by hand (photos, sky map): the current obstructed sky description is the start state (#12), else a free sky with `n_sky_nodes`.
+        """Start marking obstructed sky patches by hand (photos, sky map) for the active photo group: its obstructed sky description is the start state (#12), else a free sky.
 
         Returns the discretization and flags as JSON, plus the sun paths of the solstices and equinoxes (as in the sky
         plot) for the site: the given coordinates, else those of the weather data; none if the site is unknown.
         """
-        self.editor_base = self.obstructed_sky or ObstructedSky.free(SkyDiscretization.from_node_count(n_sky_nodes))
+        ### Without a description, a free sky on the other groups' discretization (all groups share one), else with n_sky_nodes.
+        self.editor_base = self.obstructed_sky or ObstructedSky.free(self.common_sky() or SkyDiscretization.from_node_count(n_sky_nodes))
+        self.editor_group = self.active_group
         if latitude is None or longitude is None:
             latitude, longitude = (self.weather.latitude, self.weather.longitude) if self.weather is not None else (None, None)
         ### The paths differ from year to year by far less than a patch; the day in UTC covers the whole path.
@@ -193,18 +252,50 @@ class BrowserSession:
         """Use the flags marked by hand as obstructed sky description (edits baked in, on the start state's discretization); returns the JSON summary."""
         if self.editor_base is None:
             raise ValueError("Start marking obstructions first")
+        if self.editor_group != self.active_group:
+            raise ValueError(f"Marking started for photo group {self.editor_group}, but group {self.active_group} is active; start marking again")
         return self.set_obstructed_sky(self.editor_base.edited(json.loads(obstructed_json), json.loads(methods_json), json.loads(details_json)))
+
+    def results_obstructed_sky(self, config):
+        """The obstructed sky description for the results: the photo groups' descriptions, interpolated at the panel position if there are several (#54); None for a free sky.
+
+        The interpolation (with the distances per region) is kept while the groups' descriptions, positions and
+        settings stay the same, so moving the panel is fast.
+        """
+        section = config["sky_obstruction"]
+        present = photo_groups(self.group_skies, section.get("groups") or ())
+        if len(present) < 2:
+            return obstructed_sky_for_panel(self.group_skies, **section)
+        key = json.dumps([[group.name, id(group.obstructed_sky), group.offset_m.tolist()] for group in present] + [section.get("interpolation") or {}], sort_keys=True)
+        if key != self.interpolator_key:
+            self.interpolator = PositionInterpolation(present, **(section.get("interpolation") or {}))
+            self.interpolator_key = key
+        return obstructed_sky_for_panel(self.group_skies, **section, interpolator=self.interpolator)
+
+    def panel_sky(self, config_json):
+        """The obstructed sky at the panel position (interpolated from the photo groups, #54) for the page's preview, as JSON; null with fewer than two groups with descriptions.
+
+        Holds the flags (on the groups' discretization), the source group, the summary and the regions with their
+        distances and centre directions as seen from the panel.
+        """
+        config = merge_configs(default_config(), json.loads(config_json))
+        if len(photo_groups(self.group_skies, config["sky_obstruction"].get("groups") or ())) < 2:
+            return json.dumps(None)
+        obstructed_sky = self.results_obstructed_sky(config)
+        details = obstructed_sky.metadata["position_interpolation"]
+        return json.dumps({"obstructed": obstructed_sky.obstructed.astype(int).tolist(), "source_group": details["source_group"], "regions": details["regions"], "panel_position_m": details["panel_position_m"],
+                           "n_obstructed": int(np.count_nonzero(obstructed_sky.obstructed)), "sky_view_factor_horizontal": obstructed_sky.sky_view_factor()})
 
     def compute(self, config_json):
         """Compute key figures, monthly values, orientation comparison and plots for a config (JSON text of a partial config, merged over the defaults); returns JSON.
 
-        Without an obstructed sky description, the sky is free (no obstruction), on the discretization of the
-        simulation section.
+        The obstruction comes from the photo groups' descriptions (interpolated at the panel position if there are
+        several, #54); without any, the sky is free (no obstruction), on the discretization of the simulation section.
         """
         if self.weather is None:
             raise ValueError("Load or download weather data first")
         config = merge_configs(default_config(), json.loads(config_json))
-        obstructed_sky = self.obstructed_sky or ObstructedSky.free(SkyDiscretization.from_node_count(**config["simulation"]))
+        obstructed_sky = self.results_obstructed_sky(config) or ObstructedSky.free(SkyDiscretization.from_node_count(**config["simulation"]))
         log_config(config)
         timings = {}
         site = resolve_site(self.weather, **config["site"])
@@ -253,11 +344,13 @@ class BrowserSession:
     def save_project(self, project_json, path):
         """Write a project zip (#37) to `path` in Pyodide's file system: the page's inputs, plus the latest results and their PDF report if `include_results`; returns `path`.
 
-        `project_json` holds the config, the weather file ({text, filename, source}), the obstructed sky description
-        ({text, filename}), the photos ([{name, taken, view, path}], each JPEG written to `path` by the worker), the
-        point cloud ({path, filename}) and an irradiation file loaded from a project ({text}); each may be missing.
-        `include_results` is set by the page only if the latest result matches these inputs, so a project is always
-        consistent. The PDF report needs matplotlib, which the worker loads first.
+        `project_json` holds the config, the weather file ({text, filename, source}), the photo groups' obstructed sky
+        descriptions (`groups`: [{name, obstructed_sky: {text, filename} or null}]; older pages send `obstructed_sky`
+        alone, for group A), the photos ([{name, taken, view, group, path}], each JPEG written to `path` by the
+        worker), the point cloud ({path, filename}) and an irradiation file loaded from a project ({text}); each may
+        be missing. Group A's description is `obstructed_sky.json` (as in projects without groups), the others'
+        `obstructed_sky_<group>.json`. `include_results` is set by the page only if the latest result matches these
+        inputs, so a project is always consistent. The PDF report needs matplotlib, which the worker loads first.
         """
         project = json.loads(project_json)
         contents = {CONFIG_NAME: config_to_yaml(merge_configs(default_config(), project.get("config") or {}))}
@@ -266,15 +359,23 @@ class BrowserSession:
             name = project_file_name(WEATHER_STEM, weather["filename"])
             contents[name] = weather["text"]
             details["weather"] = {"file": name, "original_filename": weather["filename"], "source": weather.get("source") or "auto"}
-        if sky := project.get("obstructed_sky"):
-            contents[OBSTRUCTED_SKY_NAME] = sky["text"]
-            details["obstructed_sky"] = {"file": OBSTRUCTED_SKY_NAME, "original_filename": sky["filename"]}
+        groups = project.get("groups") or [{"name": FIRST_GROUP, "obstructed_sky": project.get("obstructed_sky")}]
+        details["groups"] = []
+        for group in groups:
+            entry = {"name": group["name"]}
+            if sky := group.get("obstructed_sky"):
+                name = group_sky_file_name(group["name"])
+                contents[name] = sky["text"]
+                entry.update(file=name, original_filename=sky["filename"])
+                if group["name"] == FIRST_GROUP:
+                    details["obstructed_sky"] = {"file": name, "original_filename": sky["filename"]}
+            details["groups"].append(entry)
         if photos := project.get("photos"):
             entries = []
             for number, photo in enumerate(photos, start=1):
                 image_file = f"{PHOTOS_DIRECTORY}/photo_{number}.jpg"
                 contents[image_file] = Path(photo["path"])
-                entries.append({"name": photo["name"], "taken": photo["taken"], "view": photo["view"], "image_file": image_file})
+                entries.append({"name": photo["name"], "taken": photo["taken"], "view": photo["view"], "group": photo.get("group") or FIRST_GROUP, "image_file": image_file})
             contents[PHOTOS_NAME] = to_json_text({FORMAT_VERSION_KEY: PHOTO_SET_FORMAT_VERSION, "kind": "photo_set", "photos": entries})
         if point_cloud := project.get("point_cloud"):
             name = project_file_name(POINT_CLOUD_STEM, point_cloud["filename"])
@@ -309,11 +410,9 @@ class BrowserSession:
             config_text = text(CONFIG_NAME)
             weather_name = find_project_file(archive, WEATHER_STEM)
             weather_details = manifest.get("weather", {})
-            sky_details = manifest.get("obstructed_sky", {})
             project = {"filename": filename, "created": manifest.get("created"), "program_version": manifest.get("program_version"), "contents": sorted(names - {MANIFEST_NAME}),
                        "config": config_from_yaml(config_text, f"{source}/{CONFIG_NAME}") if config_text is not None else None,
                        "weather": {"text": text(weather_name), "filename": weather_details.get("original_filename") or weather_name, "source": weather_details.get("source") or "auto"} if weather_name else None,
-                       "obstructed_sky": {"text": text(OBSTRUCTED_SKY_NAME), "filename": sky_details.get("original_filename") or OBSTRUCTED_SKY_NAME} if OBSTRUCTED_SKY_NAME in names else None,
                        "irradiation": {"text": text(IRRADIATION_NAME)} if IRRADIATION_NAME in names else None,
                        "photos": [], "point_cloud": None, "has_results": any(name.startswith(RESULTS_DIRECTORY + "/") for name in names)}
             if PHOTOS_NAME in names:
@@ -323,7 +422,17 @@ class BrowserSession:
                     if photo["image_file"] not in names:
                         log.warning(f"{source}: photo {photo['name']!r} has no image {photo['image_file']} in the project; skipped")
                         continue
-                    project["photos"].append({"name": photo["name"], "taken": photo["taken"], "view": photo["view"], "path": archive.extract(photo["image_file"], directory)})
+                    project["photos"].append({"name": photo["name"], "taken": photo["taken"], "view": photo["view"], "group": photo.get("group") or FIRST_GROUP, "path": archive.extract(photo["image_file"], directory)})
+            ### Photo groups (#55): from the manifest, the config and the photos; older projects have group A only.
+            listed = {entry["name"]: entry for entry in manifest.get("groups") or []}
+            configured = [entry.get("name") for entry in ((project["config"] or {}).get("sky_obstruction", {}).get("groups") or [])]
+            group_names = list(dict.fromkeys([FIRST_GROUP, *listed, *[str(name) for name in configured if name], *[photo["group"] for photo in project["photos"]]]))
+            project["groups"] = []
+            for name in group_names:
+                file_name = group_sky_file_name(name)
+                original = listed.get(name, {}).get("original_filename") or (manifest.get("obstructed_sky", {}).get("original_filename") if name == FIRST_GROUP else None)
+                project["groups"].append({"name": name, "obstructed_sky": {"text": text(file_name), "filename": original or file_name} if file_name in names else None})
+            project["obstructed_sky"] = project["groups"][0]["obstructed_sky"]
             if point_cloud_name := find_project_file(archive, POINT_CLOUD_STEM):
                 project["point_cloud"] = {"path": archive.extract(point_cloud_name, directory), "filename": manifest.get("point_cloud", {}).get("original_filename") or point_cloud_name}
         log.info(f"Project {source}: {', '.join(project['contents'])}")

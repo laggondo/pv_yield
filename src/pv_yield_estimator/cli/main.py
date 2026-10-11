@@ -1,12 +1,14 @@
 """Entry point of the command-line front end.
 
 Subcommands run the pipeline steps, each reading and writing intermediate files:
-- `obstruction`: LiDAR point cloud → obstructed sky description (JSON)
+- `obstruction`: LiDAR point cloud → obstructed sky description (JSON); without a point cloud, the photo groups' descriptions
+  (`sky_obstruction.groups`) → the obstructed sky description at the panel position (`sky_obstruction.panel_position_m`)
 - `weather`: download weather data for the site (site.latitude/longitude or site.query) → weather file
 - `irradiation`: weather file → irradiation per sky patch (JSON)
 - `yield`: irradiation per sky patch + obstructed sky description (optional) → results directory (key figures, tables, plots, report)
 - `run`: all steps in one go: point cloud or obstructed sky description (optional) + weather file (downloaded if not given) → results directory
-Without an obstructed sky description, the sky is free (no obstruction).
+Without an obstructed sky description, the photo groups' descriptions in the config are used (interpolated at the panel
+position if there are several, #54), and without those, the sky is free (no obstruction).
 Without a subcommand, the config is only assembled, logged and optionally exported.
 All file and network access of the CLI lives here; the core receives and returns data.
 """
@@ -29,6 +31,7 @@ from pv_yield_estimator.core.export import export_files
 from pv_yield_estimator.core.irradiation import PatchIrradiation, compute_patch_irradiation
 from pv_yield_estimator.core.obstruction_methods import sky_obstruction_method
 from pv_yield_estimator.core.panel_yield import YieldEstimator
+from pv_yield_estimator.core.position_interpolation import obstructed_sky_for_panel
 from pv_yield_estimator.core.sky import ObstructedSky, SkyDiscretization
 from pv_yield_estimator.core.weather import distance_km, load_weather, resolve_site
 from pv_yield_estimator.core.weather_download import USER_AGENT, parse_site_search, site_search_url, weather_download_candidates
@@ -57,8 +60,8 @@ def parse_arguments(argv=None):
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    obstruction = subparsers.add_parser("obstruction", help="LiDAR point cloud -> obstructed sky description (JSON)")
-    obstruction.add_argument("point_cloud", type=Path, help="point cloud file, e.g. Livox CSV")
+    obstruction = subparsers.add_parser("obstruction", help="LiDAR point cloud, or the photo groups of the config (sky_obstruction.groups) -> obstructed sky description (JSON)")
+    obstruction.add_argument("point_cloud", type=Path, nargs="?", help="point cloud file, e.g. Livox CSV; without it, the photo groups' descriptions interpolated at sky_obstruction.panel_position_m")
     obstruction.add_argument("-o", "--output", type=Path, required=True, help="obstructed sky description to write (JSON)")
 
     weather = subparsers.add_parser("weather", help="download weather data for the site (site.latitude/longitude or site.query) -> weather file")
@@ -75,7 +78,7 @@ def parse_arguments(argv=None):
     yield_parser.add_argument("-d", "--output-dir", type=Path, help="directory for the results (see the config's output section); without it, the key figures are only logged")
 
     run = subparsers.add_parser("run", help="all steps: point cloud or obstructed sky description (optional) + weather file (downloaded if not given) -> results directory")
-    run.add_argument("-s", "--sky-input", type=Path, help="point cloud file (e.g. Livox CSV), or an obstructed sky description (JSON) to skip the obstruction step; without it, no obstruction")
+    run.add_argument("-s", "--sky-input", type=Path, help="point cloud file (e.g. Livox CSV), or an obstructed sky description (JSON) to skip the obstruction step; without it, the photo groups of the config (sky_obstruction.groups), else no obstruction")
     run.add_argument("-w", "--weather", type=Path, help="weather file; if not given, downloaded for the site (site.latitude/longitude or site.query) and kept in the output directory")
     run.add_argument("-d", "--output-dir", type=Path, required=True, help="directory for the intermediate files (obstructed_sky.json, patch_irradiation.json, the downloaded weather) and the results")
 
@@ -223,9 +226,37 @@ def write_plots_html(path, plots, title):
     log.info(f"Wrote {path}")
 
 
+def load_group_skies(groups=(), **kwargs):
+    """The photo groups' obstructed sky descriptions (dict name -> ObstructedSky) from the files in the config's `sky_obstruction.groups` (entries {name, file, offset_m}; paths relative to the current directory).
+
+    Entries without a file (e.g. from a config saved in the browser, where the descriptions are in the project) are
+    skipped with a warning.
+    """
+    skies = {}
+    for entry in groups or ():
+        if "name" not in entry:
+            raise ValueError(f"Photo group {entry!r} in sky_obstruction.groups has no name")
+        if not entry.get("file"):
+            log.warning(f"Photo group {entry['name']} has no file in sky_obstruction.groups; skipped")
+            continue
+        skies[str(entry["name"])] = ObstructedSky.from_dict(read_json(entry["file"], f"obstructed sky description of photo group {entry['name']}"), source=str(entry["file"]))
+    return skies
+
+
+def photo_groups_obstructed_sky(config):
+    """The obstructed sky description from the photo groups of the config (interpolated at the panel position if there are several), or None without groups."""
+    skies = load_group_skies(**config["sky_obstruction"])
+    if not skies:
+        return None
+    log.info(f"Obstruction from the photo groups {', '.join(skies)} at the panel position {config['sky_obstruction'].get('panel_position_m') or [0, 0, 0]} m")
+    return obstructed_sky_for_panel(skies, **config["sky_obstruction"])
+
+
 def load_or_compute_obstructed_sky(sky_input, config):
-    """Obstructed sky description from a JSON file (kind obstructed_sky), computed from a point cloud file, or, without input, a free sky (no obstruction)."""
+    """Obstructed sky description from a JSON file (kind obstructed_sky), computed from a point cloud file, or, without input, from the config's photo groups or a free sky (no obstruction)."""
     if sky_input is None:
+        if (from_groups := photo_groups_obstructed_sky(config)) is not None:
+            return from_groups
         log.info("No obstructed sky description given: computing without obstruction")
         return ObstructedSky.free(SkyDiscretization.from_node_count(**config["simulation"]))
     if require_file(sky_input, "point cloud or obstructed sky description").suffix.lower() == ".json":
@@ -245,7 +276,13 @@ def main(argv=None):
     if args.export_config is not None:
         write_text(args.export_config, config_to_yaml(config))
     if args.command == "obstruction":
-        write_text(args.output, to_json_text(run_obstruction(args.point_cloud, config).to_dict()))
+        if args.point_cloud is None:
+            obstructed_sky = photo_groups_obstructed_sky(config)
+            if obstructed_sky is None:
+                raise ValueError("Give a point cloud file, or photo groups with their obstructed sky descriptions in the config (sky_obstruction.groups: [{name: A, file: a.json, offset_m: [0, 0, 0]}, ...])")
+        else:
+            obstructed_sky = run_obstruction(args.point_cloud, config)
+        write_text(args.output, to_json_text(obstructed_sky.to_dict()))
     elif args.command == "weather":
         download_weather(config, args.output)
     elif args.command == "irradiation":

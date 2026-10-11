@@ -120,3 +120,23 @@ def test_weather_download_with_site_search_and_fallback(tmp_path, monkeypatch, f
     main(arguments)
     assert len(requests) == 1
     assert json.loads((tmp_path / "run" / "results.json").read_text())["inputs"]["weather"]["weather_source"] == "open_meteo"
+
+
+def test_photo_groups_in_the_cli(tmp_path, monkeypatch):
+    """Photo groups in the config (#55): `obstruction` without a point cloud writes the description interpolated at the panel position, `run` without -s uses it."""
+    from pv_yield_estimator.core.sky import SkyDiscretization
+    from synthetic_scene import garage_scene
+    sky, scene = SkyDiscretization.from_node_count(200), garage_scene()
+    for name, position in {"A": (0.0, 0.0, 0.0), "B": (6.0, 0.0, 0.0)}.items():
+        (tmp_path / f"group_{name}.json").write_text(json.dumps(scene.obstructed_sky(sky, position).to_dict()))
+    (tmp_path / "groups.yaml").write_text("sky_obstruction:\n  groups:\n    - {name: A, file: group_A.json, offset_m: [0, 0, 0]}\n    - {name: B, file: group_B.json, offset_m: [6, 0, 0]}\n  panel_position_m: [3, 0, 0]\n")
+    monkeypatch.chdir(tmp_path)
+    main(["obstruction", "-o", "panel.json", "-c", "groups.yaml"])
+    panel_sky = json.loads((tmp_path / "panel.json").read_text())
+    assert panel_sky["metadata"]["position_interpolation"]["panel_position_m"] == [3.0, 0.0, 0.0] and panel_sky["metadata"]["method"] == "photo+position_interpolation"
+    main(["run", "-w", str(WEATHER), "-d", "run", "-c", "groups.yaml", "-m", "simulation.n_sky_nodes=200", *FAST])
+    assert json.loads((tmp_path / "run" / "obstructed_sky.json").read_text())["obstructed"] == panel_sky["obstructed"]
+    main(["run", "-w", str(WEATHER), "-d", "at_b", "-c", "groups.yaml", "-m", "sky_obstruction.panel_position_m=[6,0,0]", *FAST])
+    assert key_figures(tmp_path / "at_b")["sky_view_factor_horizontal"] == pytest.approx(scene.obstructed_sky(sky, (6.0, 0.0, 0.0)).sky_view_factor())
+    with pytest.raises(ValueError, match="Give a point cloud file"):
+        main(["obstruction", "-o", "none.json"])

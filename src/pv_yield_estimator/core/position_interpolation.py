@@ -286,3 +286,36 @@ class PositionInterpolation:
         log.info(f"Obstructed sky at the panel position {np.round(panel_position_m, 2).tolist()} m from group {source.name} ({len(self.groups)} groups): {np.count_nonzero(obstructed)} of {self.sky.n_patches} patches obstructed, "
                  f"horizontal sky view factor {result.sky_view_factor():.4f} (group {source.name}: {source.obstructed_sky.sky_view_factor():.4f})")
         return result
+
+
+def photo_groups(obstructed_skies, groups=(), **kwargs):
+    """Photo groups from their obstructed sky descriptions (dict name -> ObstructedSky or None) and the config's `sky_obstruction.groups` (list of {name, offset_m}).
+
+    Groups without a description are left out (not marked yet); a group missing in the config has its position at
+    group A's (offset 0), with a warning unless it is A.
+    """
+    offsets = {str(entry["name"]): entry.get("offset_m") for entry in groups or ()}
+    result = []
+    for name, obstructed_sky in obstructed_skies.items():
+        if obstructed_sky is None:
+            continue
+        if name not in offsets and name != "A":
+            log.warning(f"Photo group {name} has no position in the config (sky_obstruction.groups); assuming group A's position")
+        result.append(PhotoGroup(name, obstructed_sky, offsets.get(name)))
+    return result
+
+
+def obstructed_sky_for_panel(obstructed_skies, groups=(), panel_position_m=None, interpolation=None, interpolator=None, **kwargs):
+    """The obstructed sky description for the results from the photo groups' descriptions (dict name -> ObstructedSky or None) and the config's `sky_obstruction` section.
+
+    No description: None (free sky). One: that description, unchanged. Several: interpolated at `panel_position_m`
+    ([east, north, up] in metres relative to group A; default: at A) with the settings in `interpolation`; an existing
+    `interpolator` (PositionInterpolation for the same groups) is reused, so its distances need not be found again.
+    """
+    present = photo_groups(obstructed_skies, groups)
+    if not present:
+        return None
+    if len(present) == 1:
+        return present[0].obstructed_sky
+    interpolator = interpolator or PositionInterpolation(present, **(interpolation or {}))
+    return interpolator.obstructed_sky(panel_position_m if panel_position_m is not None else (0.0, 0.0, 0.0))

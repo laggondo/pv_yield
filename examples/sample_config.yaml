@@ -16,6 +16,14 @@ sky_obstruction:
     min_points: 10                  ### minimum number of points in an obstructed sky patch
   photo:
     fov_deg: 65                     ### browser app: camera field of view across the photo's longer side, default for new photos
+  ### Photo groups (#55): one obstructed sky description per camera position, positions [east, north, up] in metres relative
+  ### to group A; with several, the obstruction is interpolated at the panel position (#54). Used by `run` without -s and by
+  ### `obstruction` without a point cloud (the browser keeps the descriptions in the project instead of `file`).
+  # groups:
+  #   - {name: A, file: obstructed_sky_A.json, offset_m: [0, 0, 0]}
+  #   - {name: B, file: obstructed_sky_B.json, offset_m: [5.8, 0.4, 0]}
+  # panel_position_m: [2.9, 0.2, 0]   ### panel position relative to group A
+  # interpolation: {sector_width_deg: 30, min_distance_m: 1, max_distance_m: 200}
 panel:
   tilt_deg: 15                      ### null (or left out): optimized
   azimuth_deg: 180                  ### compass: 180 = south; null (or left out): optimized
