@@ -7,6 +7,7 @@ Prints the numbers (run with -s to see them).
 
 import json
 import os
+import time
 import urllib.request
 from pathlib import Path
 
@@ -27,11 +28,22 @@ SITE = {"latitude": 48.0, "longitude": 7.85}
 PAGE_ORIGIN = "https://laggondo.github.io"
 
 
-def fetch(url):
-    """Fetch a URL as a browser page on another origin would; returns (text, CORS header or None)."""
+def fetch(url, retry_delays_s=(5, 20)):
+    """Fetch a URL as a browser page on another origin would; returns (text, CORS header or None).
+
+    A reset connection is tried again after the given delays: PVGIS sometimes resets connections when several CI runs
+    (branch, pull request, preview branch) query it at the same time.
+    """
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Origin": PAGE_ORIGIN})
-    with urllib.request.urlopen(request, timeout=300) as response:
-        return response.read().decode("utf-8"), response.headers.get("Access-Control-Allow-Origin")
+    for delay_s in (*retry_delays_s, None):
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                return response.read().decode("utf-8"), response.headers.get("Access-Control-Allow-Origin")
+        except ConnectionResetError as error:
+            if delay_s is None:
+                raise
+            print(f"\n{url}: {error}; trying again in {delay_s} s")
+            time.sleep(delay_s)
 
 
 @pytest.fixture(scope="module")
