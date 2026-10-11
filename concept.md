@@ -21,7 +21,7 @@ Estimate the photovoltaic (PV) yield for a user-defined location:
 - Parts of the method may use the phone's camera, GPS, accelerometer, gyroscope and compass.
 - Parts of the method are well suited for touch screens.
 - The pipeline runs in separate steps, not necessarily in one go. Intermediate results are stored on the device as files (JSON for data, YAML for configs) that can be transferred to other devices, e.g. measure on the phone, analyze on the computer. Offline use is not a priority, but stored results allow some steps to run offline.
-- A project bundles all files of a site in one zip (`project.yaml` with the contents, config, weather, obstructed sky description, photos, AR recording, point cloud, results and report; #37), to move everything between devices in one go.
+- A project bundles all files of a site in one zip (`project.yaml` with the contents, config, weather, obstructed sky description, photos, AR recording, point cloud, results and report; #37), to move everything between devices in one go. The CLI reads and changes the same zip (`-p`), or a directory with the same layout.
 
 ## Inputs
 
@@ -95,14 +95,23 @@ The obstructed sky description is the fundamental intermediate result:
 - No offset between camera and panel (#11): the photo is taken from the panel position, and the page says so. Estimating distances (entered per obstruction, or from two photos) may follow later.
 - Automatic sky detection may follow later.
 
-**AR video method** (#46; recording in bundle 7, #47; point cloud and obstruction follow in #48, #49): conventional triangulation, no AI.
+**AR video method** (#46; recording in bundle 7, #47; point cloud in bundle 8, #48; obstruction follows in #49): conventional triangulation, no AI.
 
 - Why: the LiDAR scanner needs a computer, Ethernet and its own power supply, the photo method gives no distances. Triangulating features seen in many frames from different positions (structure from motion) gives a point cloud, so the obstruction can be computed for any panel position, like with LiDAR. A few metres of movement suffice: with ~3 m baseline, an obstruction 30 m away is located to roughly ±0.5–2 m, and the direction error at the panel stays below a sky patch. Turning on the spot gives no depth: the phone must be moved sideways, and up and down for horizontal edges.
 - Camera poses from ARCore via WebXR (`immersive-ar` session with `camera-access` and `dom-overlay`, reference space `local`): ARCore fuses camera and motion sensors and gives each frame's camera position in metres and its orientation, with y up and the origin at the start pose (the reference position). Scale, up and the camera path come for free; what remains is matching and triangulating features (#48) and turning the result to north.
 - Recording (`web/ar_recording.js`): keyframes by movement (> 5 cm or > 5° since the last one, at most 4 per second, up to 300), each with the camera image (read back from WebGL, JPEG), pose, projection matrix (gives the field of view), tracking state and the latest compass reading; GPS at the start (sets an empty site, a note if it is far from the site; not used within the point cloud, as it is off by metres near buildings).
 - North: the AR coordinates differ from the earth's by a turn about the vertical, the heading offset (the compass direction the camera faced at the start). It is estimated as the robust mean of compass minus AR heading over the frames (else from the compass readings just before and after the session) and can be corrected by hand (`core/ar_recording.py`).
 - The frames have known orientations, so the sky map shows them merged like the photos (inspection now; later the background for marking by hand what the point cloud misses, e.g. distant mountains). No terrain data.
-- Stored in the project zip as `recording.json` (format version, GPS, reference note, heading offset, diagnostics, one entry per frame) plus `recording/frame_<n>.jpg`; kept in the browser like the photos. Everything runs on the phone; the CLI will process the same recordings (#48).
+- Stored in the project zip as `recording.json` (format version, GPS, reference note, heading offset, diagnostics, one entry per frame) plus `recording/frame_<n>.jpg`; kept in the browser like the photos. Everything runs on the phone; the CLI processes the same recordings (#48).
+- Point cloud (`core/reconstruction.py`, OpenCV and numpy; #48), with the known poses instead of estimating them:
+  - Frames in grayscale, downscaled to 960 px on the longer side; frames with lost tracking are not used. ORB features (SIFT as an option), up to 2000 per frame.
+  - Frame pairs: at least 0.2 m apart, viewing directions at most half the field of view apart, at most 5 partners per frame spread over the baselines.
+  - Guided matching: only feature pairs within 2 px of each other's epipolar line (from the known poses) are compared, then Lowe's ratio test. This is also 4× faster than comparing all.
+  - Matches are joined into tracks over all frames (connected components) and each track is triangulated as the point closest to its rays; observations off by more than 2 px are dropped and the rest triangulated again.
+  - Points need at least 2 frames, a triangulation angle of at least 2° (no measurable parallax otherwise: clouds, distant terrain are discarded and marked by hand, #49) and 0.3 m distance from the cameras (rays from nearly the same position, e.g. when turning on the spot, meet at the camera).
+  - Turned to north with the recording's heading offset; origin at the reference position. Per point: number of frames, triangulation angle, distance, estimated distance error (distance × pixel error / focal length / sin(angle)), reprojection error.
+  - Stored in the project as `reconstructed_points.csv`, with the settings, statistics and heading offset as YAML in comment lines at the top. The browser app keeps the file through project load and save until the recording is replaced or removed. Settings: config section `sky_obstruction.ar_video`.
+  - Tests use a synthetic textured room rendered from known poses (`tests/synthetic_recording.py`): the points lie on the walls to a few centimetres.
 - Real recordings show the user's home and stay private (never in this repository, issues or pull requests); tests use synthetic recordings.
 
 **Combining methods** (#12): a loaded or computed obstructed sky description (e.g. from LiDAR) is the start state of the manual marking, so a LiDAR result can be corrected on photos or on the sky map. The edits are baked into the flags (no separate layer; the file format stays the same). The metadata keeps the original entries and records the contributing methods in order (`methods`, e.g. `[lidar, photo]`, joined as `method: lidar+photo`) and one entry per editing session under `edits` (date, methods, number of changed patches, the photos' camera views).

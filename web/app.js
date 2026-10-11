@@ -26,8 +26,9 @@ let nextCallId = 0;
 let pythonReady = false;
 let arAvailable = false;             // this browser can make AR recordings (WebXR immersive-ar, #47)
 // Loaded inputs as file content, kept to re-parse (weather format change), to save as files and to store for the next visit.
-// The irradiation per sky patch is only kept to save it again, if a loaded project has it (the page computes its own).
-const inputs = { weather: null, sky: null, irradiation: null };        // {text, filename, source?}
+// The irradiation per sky patch is only kept to save it again, if a loaded project has it (the page computes its own);
+// so is the point cloud reconstructed from the AR recording (#48, e.g. by the CLI), until the recording is replaced or removed.
+const inputs = { weather: null, sky: null, irradiation: null, reconstructedPoints: null };        // {text, filename, source?}
 // The loaded weather data's coordinates ({latitude, longitude}), where the panel map starts without a site.
 let weatherSite = null;
 // Config entries without a form field, from a loaded config file; the form's entries are merged over them.
@@ -417,11 +418,18 @@ const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => 
 // AR video recording (#47): its frames are shown on the sky map; the recording is kept like the photos.
 const recorder = createArRecorder({ element, call, report, fail, whileBusy, editor,
   site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }),
-  onRecorded: recordingMade, onChanged: () => remember("recording", recorder.recording) });
+  onRecorded: recordingMade, onChanged: recordingChanged });
+
+// A point cloud reconstructed from an earlier recording no longer fits once the recording is replaced or removed.
+async function recordingChanged() {
+  if (!recorder.recording) inputs.reconstructedPoints = null;
+  await remember("recording", recorder.recording);
+}
 
 // A new recording sets the site from its GPS position if the site is still empty (the distance to a set site is in the
 // recording's summary).
 async function recordingMade(data) {
+  inputs.reconstructedPoints = null;
   if (!data.gps || numberOrNull("site-latitude") !== null || numberOrNull("site-longitude") !== null) return;
   setSite(data.gps.latitude, data.gps.longitude);
   report(`Site from the recording's GPS position: ${data.gps.latitude.toFixed(5)}, ${data.gps.longitude.toFixed(5)} (±${Math.round(data.gps.accuracy_m)} m)`);
@@ -550,7 +558,8 @@ async function saveProject() {
       report(`Saving the project without results, as computing them failed: ${error.message ?? error}`);
     }
   }
-  const project = { config: currentConfig(), weather: inputs.weather, obstructed_sky: inputs.sky, irradiation: inputs.irradiation, include_results: includeResults };
+  const project = { config: currentConfig(), weather: inputs.weather, obstructed_sky: inputs.sky, irradiation: inputs.irradiation,
+                    reconstructed_points: inputs.reconstructedPoints, include_results: includeResults };
   const pointCloud = element("lidar-file").files[0] ?? null;
   report(`Saving the project${pointCloud ? ` with the point cloud ${pointCloud.name} (${format(pointCloud.size / 1e6, 1)} MB)` : ""} ...`);
   saveFile(projectFilename(), await call("saveProject", project, await editor.photoFiles(), pointCloud, recorder.recording), "application/zip");
@@ -559,7 +568,7 @@ async function saveProject() {
 // Empty the inputs and set the form to the page's defaults (also in the browser's storage), e.g. before loading a project.
 async function resetInputs() {
   await call("reset");
-  Object.assign(inputs, { weather: null, sky: null, irradiation: null });
+  Object.assign(inputs, { weather: null, sky: null, irradiation: null, reconstructedPoints: null });
   weatherSite = null;
   inputsVersion++;
   importedConfig = {};
@@ -617,6 +626,7 @@ async function loadProject(file) {
     element("lidar").open = true;
   }
   if (project.irradiation) inputs.irradiation = project.irradiation;
+  if (project.reconstructed_points) inputs.reconstructedPoints = project.reconstructed_points;
   report(`Project loaded: ${file.name} (saved ${project.created} with version ${project.program_version}): ${project.contents.join(", ")}`);
   openTab(project.has_results && inputs.weather ? "results" : "site");
 }

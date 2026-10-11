@@ -32,8 +32,8 @@ from pv_yield_estimator.core.weather import distance_km, load_weather, resolve_s
 from pv_yield_estimator.core.weather_download import parse_site_name, parse_site_search, pvgis_tmy_url, site_name_url, site_search_url, weather_download_candidates
 from pv_yield_estimator.file_format import FORMAT_VERSION_KEY, check_format_version, to_json_text
 from pv_yield_estimator.plotting.interactive import SUN_PATH_DAYS, result_plots
-from pv_yield_estimator.project import (CONFIG_NAME, IRRADIATION_NAME, MANIFEST_NAME, OBSTRUCTED_SKY_NAME, PHOTOS_DIRECTORY, PHOTOS_NAME, POINT_CLOUD_STEM, RECORDING_NAME, REPORT_NAME, RESULTS_DIRECTORY,
-                                        WEATHER_STEM, find_project_file, project_file_name, read_project_manifest, write_project_zip)
+from pv_yield_estimator.project import (CONFIG_NAME, IRRADIATION_NAME, MANIFEST_NAME, OBSTRUCTED_SKY_NAME, PHOTOS_DIRECTORY, PHOTOS_NAME, POINT_CLOUD_STEM, RECONSTRUCTED_POINTS_NAME, RECORDING_NAME,
+                                        REPORT_NAME, RESULTS_DIRECTORY, WEATHER_STEM, find_project_file, project_file_name, read_project_manifest, write_project_zip)
 
 log = logging.getLogger(__name__)
 
@@ -273,7 +273,8 @@ class BrowserSession:
         `project_json` holds the config, the weather file ({text, filename, source}), the obstructed sky description
         ({text, filename}), the photos ([{name, taken, view, path}], each JPEG written to `path` by the worker), the AR
         recording ({data, frame_paths}: the content of `recording.json` and the frames' JPEGs in the same order), the
-        point cloud ({path, filename}) and an irradiation file loaded from a project ({text}); each may be missing.
+        point cloud ({path, filename}), and an irradiation file and the point cloud reconstructed from the recording
+        (#48), both loaded from a project ({text}); each may be missing.
         `include_results` is set by the page only if the latest result matches these inputs, so a project is always
         consistent. The PDF report needs matplotlib, which the worker loads first.
         """
@@ -307,6 +308,8 @@ class BrowserSession:
             details["point_cloud"] = {"file": name, "original_filename": point_cloud["filename"]}
         if irradiation := project.get("irradiation"):
             contents[IRRADIATION_NAME] = irradiation["text"]
+        if reconstructed_points := project.get("reconstructed_points"):
+            contents[RECONSTRUCTED_POINTS_NAME] = reconstructed_points["text"]
         if project.get("include_results"):
             last = self.require_result()
             contents[REPORT_NAME] = self.pdf_report()
@@ -341,6 +344,7 @@ class BrowserSession:
                        "weather": {"text": text(weather_name), "filename": weather_details.get("original_filename") or weather_name, "source": weather_details.get("source") or "auto"} if weather_name else None,
                        "obstructed_sky": {"text": text(OBSTRUCTED_SKY_NAME), "filename": sky_details.get("original_filename") or OBSTRUCTED_SKY_NAME} if OBSTRUCTED_SKY_NAME in names else None,
                        "irradiation": {"text": text(IRRADIATION_NAME)} if IRRADIATION_NAME in names else None,
+                       "reconstructed_points": {"text": text(RECONSTRUCTED_POINTS_NAME)} if RECONSTRUCTED_POINTS_NAME in names else None,
                        "photos": [], "recording": None, "point_cloud": None, "has_results": any(name.startswith(RESULTS_DIRECTORY + "/") for name in names)}
             if PHOTOS_NAME in names:
                 photo_set = json.loads(text(PHOTOS_NAME))
