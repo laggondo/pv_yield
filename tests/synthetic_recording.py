@@ -144,8 +144,29 @@ class SyntheticRoom:
         return np.min(np.abs(np.concatenate([points - self.low, points - self.high], axis=1)), axis=1)
 
 
-def room_recording(heading_offset_deg=30.0, n_frames=30, fov_deg=60.0, width=320, height=240, moving=True, room=None):
-    """A recording in a `SyntheticRoom`: two passes of 2 m along the room (east, then back west 0.4 m higher), looking around slowly; without `moving`, the camera turns on the spot (jitter of 1 mm, no baseline).
+def add_depth_maps(recording, views, positions, room, depth_width=30, depth_height=40):
+    """Add ARCore-like depth maps of the room to the recording's frames: 16-bit millimetres (format unsigned-short), depth along the viewing direction, in a depth buffer turned by 90° against the view (as on phones in portrait).
+
+    The buffer's normalized coordinates (u, v) are (1 - y, x) of the normalized view coordinates (x, y).
+    """
+    import base64
+    ### Row-major (u, v, z, w) from (x, y, z, w); stored column-major as WebXR does.
+    buffer_from_view = np.array([[0.0, -1.0, 0.0, 1.0], [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
+    rows, columns = np.indices((depth_height, depth_width))
+    buffer_u, buffer_v = (columns.ravel() + 0.5) / depth_width, (rows.ravel() + 0.5) / depth_height
+    view_x, view_y = buffer_v, 1.0 - buffer_u
+    for frame, view, position in zip(recording["frames"], views, positions):
+        directions = view.directions(np.stack([view_x * view.width, view_y * view.height], axis=1))
+        hits, _, _ = room.hit(np.asarray(position, dtype=float), directions)
+        along_view = np.linalg.norm(hits - position, axis=1) * (directions @ view.forward)
+        frame["depth"] = {"width": depth_width, "height": depth_height, "format": "unsigned-short", "raw_value_to_meters": 0.001,
+                          "norm_depth_buffer_from_norm_view": buffer_from_view.T.ravel().tolist(),
+                          "data_base64": base64.b64encode(np.round(along_view * 1000).astype("<u2").tobytes()).decode()}
+    return recording
+
+
+def room_recording(heading_offset_deg=30.0, n_frames=30, fov_deg=60.0, width=320, height=240, moving=True, room=None, with_depth=False):
+    """A recording in a `SyntheticRoom`: two passes of 2 m along the room (east, then back west 0.4 m higher), looking around slowly; without `moving`, the camera turns on the spot (jitter of 1 mm, no baseline); `with_depth` adds depth maps (`add_depth_maps`).
 
     Returns (recording dict, list of JPEG bytes, the room).
     """
@@ -160,4 +181,7 @@ def room_recording(heading_offset_deg=30.0, n_frames=30, fov_deg=60.0, width=320
         positions.append([2.0 * along, 0.2 * np.sin(4 * fraction), 0.4 * back] if moving else jitter[index])
     images = [room.render(view, position) for view, position in zip(views, positions)]
     ### Frames timed so that the camera turns by 10°/s, slow enough not to blur.
-    return recording_from_views(views, positions, heading_offset_deg, time_step_s=300 / max(n_frames - 1, 1) / 10), images, room
+    recording = recording_from_views(views, positions, heading_offset_deg, time_step_s=300 / max(n_frames - 1, 1) / 10)
+    if with_depth:
+        add_depth_maps(recording, views, positions, room)
+    return recording, images, room

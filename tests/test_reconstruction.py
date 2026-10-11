@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from pv_yield_estimator.core.ar_recording import ar_to_earth
-from pv_yield_estimator.core.reconstruction import FramePoses, ReconstructedPoints, camera_matrix, frame_turn_rates, reconstruct_points, select_frame_pairs
+from pv_yield_estimator.core.reconstruction import FramePoses, ReconstructedPoints, camera_matrix, depth_map, frame_turn_rates, reconstruct_points, recording_points, select_frame_pairs
 from pv_yield_estimator.plotting.static import reconstruction_figure
 from synthetic_recording import SyntheticRoom, recording_from_views, room_recording, synthetic_recording
 
@@ -148,3 +148,18 @@ def test_room_scene():
     assert np.std(scene.grey(*scene.hit(np.zeros(3), np.random.default_rng(0).normal(size=(500, 3))))) > 20
     recording = recording_from_views([], [])
     assert recording["frames"] == []
+
+
+def test_points_from_depth_maps():
+    """Depth maps recorded with the frames (as ARCore's via WebXR, with the depth buffer turned against the view) give a dense cloud on the walls; `auto` prefers them, `features` triangulates."""
+    recording, images, scene = room_recording(heading_offset_deg=30.0, n_frames=12, with_depth=True)
+    assert depth_map(recording["frames"][0]["depth"]).shape == (40, 30)
+    points = recording_points(recording, images)
+    distances = scene.distance_to_walls(points.points)
+    assert points.metadata["settings"]["points_from"] == "depth" and len(points.table) > 500
+    assert np.median(distances) < 0.02 and np.percentile(distances, 95) < 0.03
+    assert points.table[["red", "green", "blue"]].to_numpy().std() > 10                  ### coloured from the frames
+    assert recording_points(recording, images, points_from="features").metadata["settings"].get("points_from") is None
+    without_depth, _, _ = room_recording(n_frames=12)
+    with pytest.raises(ValueError, match="has no depth maps"):
+        recording_points(without_depth, images, points_from="depth")

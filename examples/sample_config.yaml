@@ -17,6 +17,9 @@ sky_obstruction:
   photo:
     fov_deg: 65                     ### browser app: camera field of view across the photo's longer side, default for new photos
   ar_video:                         ### point cloud from an AR recording (#48); defaults shown
+    points_from: auto               ### depth (ARCore's depth maps, if recorded), features (triangulation), auto: depth if recorded
+    max_depth_m: 5.0                ### depth maps: farther depths dropped ...
+    voxel_m: 0.03                   ### ... points merged into cubes of this size, seen in at least min_depth_frames: 2 frames
     feature: orb                    ### orb or sift
     max_features: 2000              ### per frame, spread over a grid of 6 × 3 cells (feature_grid), after local contrast enhancement
     max_image_px: 960               ### frames downscaled to this longer side

@@ -219,9 +219,9 @@ def read_recording(path=None, project=None):
 
 
 def run_reconstruction(recording, images, config):
-    """Point cloud from an AR recording, with the settings of the config's `sky_obstruction.ar_video` section."""
-    from pv_yield_estimator.core.reconstruction import reconstruct_points
-    return reconstruct_points(recording, images, **(config["sky_obstruction"].get("ar_video") or {}))
+    """Point cloud from an AR recording (from its depth maps if it has any, else by triangulation), with the settings of the config's `sky_obstruction.ar_video` section."""
+    from pv_yield_estimator.core.reconstruction import recording_points
+    return recording_points(recording, images, **(config["sky_obstruction"].get("ar_video") or {}))
 
 
 def run_yield(irradiation, obstructed_sky, config, output_dir=None):

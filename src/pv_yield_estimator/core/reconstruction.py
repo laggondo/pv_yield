@@ -30,7 +30,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
 from pv_yield_estimator import __version__
-from pv_yield_estimator.core.ar_recording import ar_to_earth, frame_rotations, recording_heading
+from pv_yield_estimator.core.ar_recording import ar_to_earth, frame_rotations, recording_heading, rotation_from_quaternion
 from pv_yield_estimator.file_format import FORMAT_VERSION_KEY, check_format_version
 
 log = logging.getLogger(__name__)
@@ -357,6 +357,102 @@ def reconstruct_points(recording, frame_images, heading_offset_deg=None, feature
              + (f", adjusted by {adjustment['rotation_correction_deg_median']:.2f}° / {100 * adjustment['position_correction_m_median']:.1f} cm (median)" if adjustment else "")
              + f"; {sum(timings.values()):.1f} s (" + ", ".join(f"{key[:-2]} {value:.1f} s" for key, value in timings.items()) + ")")
     return ReconstructedPoints(points, metadata, poses.centres @ to_earth.T)
+
+
+def depth_map(depth):
+    """Depth map (metres, rows × columns of the depth buffer; 0 where unknown) from a frame's `depth` entry as recorded (base64 data in `format`: luminance-alpha or unsigned-short as 16-bit integers, or float32)."""
+    import base64
+    data = base64.b64decode(depth["data_base64"])
+    dtype = {"luminance-alpha": "<u2", "unsigned-short": "<u2", "float32": "<f4"}.get(depth["format"])
+    if dtype is None:
+        raise ValueError(f"Unknown depth data format {depth['format']!r}; known: luminance-alpha, unsigned-short, float32")
+    values = np.frombuffer(data, dtype=dtype).astype(float)
+    if len(values) != depth["width"] * depth["height"]:
+        raise ValueError(f"Depth map of {len(values)} values, expected {depth['width']} x {depth['height']}")
+    return values.reshape(depth["height"], depth["width"]) * depth["raw_value_to_meters"]
+
+
+def depth_map_points(frame, max_depth_m=5.0):
+    """Points (AR coordinates) of a frame's depth map with the normalized view coordinates (x right, y down, 0–1) of their pixels.
+
+    Each depth buffer pixel centre is taken back to normalized view coordinates with the inverse of the recorded
+    `norm_depth_buffer_from_norm_view` transform, then along the camera ray (projection matrix) to its depth, taken as
+    the distance along the viewing direction (ARCore's depth maps), and into AR coordinates with the frame's pose.
+    """
+    depth = frame["depth"]
+    distances = depth_map(depth)
+    rows, columns = np.indices(distances.shape)
+    valid = (distances > 0) & (distances <= max_depth_m)
+    buffer_coordinates = np.stack([(columns[valid] + 0.5) / depth["width"], (rows[valid] + 0.5) / depth["height"], np.zeros(np.count_nonzero(valid)), np.ones(np.count_nonzero(valid))])
+    view_coordinates = np.linalg.inv(np.asarray(depth["norm_depth_buffer_from_norm_view"], dtype=float).reshape(4, 4).T) @ buffer_coordinates
+    view_x, view_y = view_coordinates[0] / view_coordinates[3], view_coordinates[1] / view_coordinates[3]
+    projection = np.asarray(frame["projection_matrix"], dtype=float)
+    ### Normalized device coordinates, then the camera ray (WebXR camera axes: x right, y up, looking along -z) at depth 1.
+    right = (2 * view_x - 1 + projection[8]) / projection[0]
+    up = (1 - 2 * view_y + projection[9]) / projection[5]
+    in_camera = np.stack([right, up, -np.ones_like(right)], axis=1) * distances[valid][:, None]
+    rotation = rotation_from_quaternion(frame["orientation_xyzw"])[0]
+    return in_camera @ rotation.T + np.asarray(frame["position_m"], dtype=float), np.stack([view_x, view_y], axis=1)
+
+
+def points_from_depth_maps(recording, frame_images, heading_offset_deg=None, max_depth_m=5.0, voxel_m=0.03, min_depth_frames=2, max_turn_rate_deg_s=20.0, **kwargs):
+    """Dense point cloud from the depth maps recorded with the frames (ARCore's Depth API via WebXR depth sensing); returns `ReconstructedPoints`.
+
+    Settings (config section `sky_obstruction.ar_video`): depths beyond `max_depth_m` are dropped (ARCore's depth is
+    most accurate within a few metres); the points of all frames are merged into cubes of `voxel_m` (mean position and
+    colour), keeping cubes seen in at least `min_depth_frames` frames. Frames with lost tracking or taken while turning
+    faster than `max_turn_rate_deg_s` are not used. The recorded poses are used as they are.
+    """
+    start = time.perf_counter()
+    frames = recording["frames"]
+    heading = recording_heading(recording, heading_offset_deg)
+    usable = np.array([bool(frame.get("depth")) and not frame.get("emulated_position") for frame in frames]) & (frame_turn_rates(recording) <= max_turn_rate_deg_s)
+    all_points, all_colours, all_frames, all_distances = [], [], [], []
+    for index in np.flatnonzero(usable):
+        frame = frames[index]
+        points, view_coordinates = depth_map_points(frame, max_depth_m)
+        image = decode_frame(frame_images[index], None, colour=True)
+        columns = np.clip((view_coordinates[:, 0] * image.shape[1]).astype(int), 0, image.shape[1] - 1)
+        rows = np.clip((view_coordinates[:, 1] * image.shape[0]).astype(int), 0, image.shape[0] - 1)
+        all_points.append(points)
+        all_colours.append(image[rows, columns].astype(float))
+        all_frames.append(np.full(len(points), index))
+        all_distances.append(np.linalg.norm(points - np.asarray(frame["position_m"], dtype=float), axis=1))
+    if not all_points:
+        table = pd.DataFrame(columns=POINT_COLUMNS, dtype=float)
+    else:
+        points, colours, frame_ids, distances = (np.concatenate(values) for values in (all_points, all_colours, all_frames, all_distances))
+        _, cell, counts = np.unique(np.floor(points / voxel_m).astype(np.int64), axis=0, return_inverse=True, return_counts=True)
+        cell = cell.ravel()
+        n_cells = len(counts)
+        frames_per_cell = np.bincount(np.unique(np.stack([cell, frame_ids], axis=1), axis=0)[:, 0], minlength=n_cells)
+        mean = lambda values: np.stack([np.bincount(cell, weights=values[:, axis], minlength=n_cells) for axis in range(values.shape[1])], axis=1) / counts[:, None]
+        positions, cell_colours, cell_distances = mean(points), mean(colours), mean(distances[:, None])[:, 0]
+        keep = frames_per_cell >= min_depth_frames
+        positions = positions[keep] @ ar_to_earth(heading["heading_offset_deg"]).T
+        table = pd.DataFrame({"east_m": positions[:, 0], "north_m": positions[:, 1], "up_m": positions[:, 2], "n_frames": frames_per_cell[keep], "triangulation_angle_deg": np.nan,
+                              "distance_m": cell_distances[keep], "distance_error_m": np.nan, "reprojection_error_px": np.nan,
+                              **{name: np.round(cell_colours[keep, channel]).astype(int) for channel, name in enumerate(("red", "green", "blue"))}})
+    statistics = {"n_frames": len(frames), "n_frames_with_depth": sum(bool(frame.get("depth")) for frame in frames), "n_frames_used": int(usable.sum()), "n_points": len(table),
+                  "depth_s": round(time.perf_counter() - start, 3)}
+    settings = {"points_from": "depth", "max_depth_m": max_depth_m, "voxel_m": voxel_m, "min_depth_frames": min_depth_frames, "max_turn_rate_deg_s": max_turn_rate_deg_s}
+    metadata = {"created": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "program_version": __version__, "recording_created": recording.get("created"), **heading,
+                "settings": settings, "statistics": statistics}
+    log.info(f"Point cloud from the depth maps: {len(table)} cubes of {100 * voxel_m:g} cm from {statistics['n_frames_used']} of {len(frames)} frames ({statistics['n_frames_with_depth']} with depth) in {statistics['depth_s']:.1f} s")
+    positions = np.array([frame["position_m"] for frame in frames], dtype=float).reshape(-1, 3)
+    return ReconstructedPoints(table, metadata, positions @ ar_to_earth(heading["heading_offset_deg"]).T)
+
+
+def recording_points(recording, frame_images, points_from="auto", **settings):
+    """Point cloud from an AR recording: from the recorded depth maps (`points_from_depth_maps`) or by matching and triangulating features (`reconstruct_points`); `auto` uses the depth maps if the recording has any."""
+    if points_from not in ("auto", "depth", "features"):
+        raise ValueError(f"Unknown points_from {points_from!r}; known: auto, depth, features")
+    has_depth = any(frame.get("depth") for frame in recording["frames"])
+    if points_from == "depth" and not has_depth:
+        raise ValueError("The AR recording has no depth maps (the phone or browser offered no depth sensing); use points_from: features")
+    if points_from == "depth" or (points_from == "auto" and has_depth):
+        return points_from_depth_maps(recording, frame_images, **settings)
+    return reconstruct_points(recording, frame_images, **settings)
 
 
 class Tracks:
