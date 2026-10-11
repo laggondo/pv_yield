@@ -111,13 +111,35 @@ def feature_detector(feature="orb", max_features=2000):
     """OpenCV feature detector and descriptor (`orb` or `sift`) and the norm to match its descriptors with."""
     import cv2
     if feature == "orb":
-        return cv2.ORB_create(nfeatures=max_features), cv2.NORM_HAMMING
+        ### A low corner threshold and border, so low-contrast texture (e.g. a wooden table) gets features too.
+        return cv2.ORB_create(nfeatures=max_features, fastThreshold=5, edgeThreshold=15, patchSize=15), cv2.NORM_HAMMING
     if feature == "sift":
-        return cv2.SIFT_create(nfeatures=max_features), cv2.NORM_L2
+        return cv2.SIFT_create(nfeatures=max_features, contrastThreshold=0.01), cv2.NORM_L2
     raise ValueError(f"Unknown feature type {feature!r}; known: orb, sift")
 
 
-def select_frame_pairs(poses, usable, fov_deg, min_baseline_m=0.2, max_view_angle_deg=None, max_pairs_per_frame=5):
+def detect_features(image, feature="orb", max_features=2000, feature_grid=(6, 3)):
+    """Features of a grayscale image spread over it: local contrast enhanced (CLAHE), then up to `max_features` / cells features per cell of a grid (rows, columns); returns pixel positions (n, 2) and descriptors.
+
+    Without the grid, the strongest corners of the whole image win: in an indoor test, 2000 ORB features left 24 for
+    the lower half of the frames, a wooden table.
+    """
+    import cv2
+    rows, columns = feature_grid
+    detector, _ = feature_detector(feature, max(1, max_features // (rows * columns)))
+    enhanced = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(image)
+    height, width = image.shape
+    keypoints = []
+    for row in range(rows):
+        for column in range(columns):
+            mask = np.zeros_like(image)
+            mask[row * height // rows:(row + 1) * height // rows, column * width // columns:(column + 1) * width // columns] = 255
+            keypoints += detector.detect(enhanced, mask)
+    keypoints, descriptors = detector.compute(enhanced, keypoints)
+    return np.array([point.pt for point in keypoints], dtype=float).reshape(-1, 2), descriptors
+
+
+def select_frame_pairs(poses, usable, fov_deg, min_baseline_m=0.05, max_view_angle_deg=None, max_pairs_per_frame=8):
     """Frame pairs (i < j) to match: both usable, at least `min_baseline_m` apart and viewing directions at most `max_view_angle_deg` apart (default: half the field of view).
 
     Of the candidates of each frame, at most `max_pairs_per_frame` partners are kept, spread evenly over the range of
@@ -231,19 +253,20 @@ def verify_matches(pixels_first, pixels_second, camera_first, camera_second, ran
     return np.zeros(len(pixels_first), dtype=bool) if mask is None else mask.ravel().astype(bool)
 
 
-def reconstruct_points(recording, frame_images, heading_offset_deg=None, feature="orb", max_features=2000, max_image_px=960, max_turn_rate_deg_s=20.0, min_baseline_m=0.2, max_view_angle_deg=None,
-                       max_pairs_per_frame=5, ratio=0.8, max_pose_error_px=20.0, ransac_px=1.5, min_pair_matches=20, adjust_poses=True, rotation_prior_deg=1.0, position_prior_m=0.05,
-                       max_rotation_correction_deg=3.0, max_position_correction_m=0.3, max_adjustment_points=5000, max_reprojection_px=2.0, min_triangulation_angle_deg=2.0, min_frames=2, min_distance_m=0.3, pixel_error_px=1.0, **kwargs):
+def reconstruct_points(recording, frame_images, heading_offset_deg=None, feature="orb", max_features=2000, max_image_px=960, feature_grid=(6, 3), max_turn_rate_deg_s=20.0, min_baseline_m=0.05, max_view_angle_deg=None,
+                       max_pairs_per_frame=8, ratio=0.8, max_pose_error_px=20.0, ransac_px=1.5, min_pair_matches=20, adjust_poses=True, rotation_prior_deg=1.0, position_prior_m=0.05,
+                       max_rotation_correction_deg=3.0, max_position_correction_m=0.3, max_adjustment_points=5000, max_reprojection_px=2.0, min_triangulation_angle_deg=2.0, min_frames=2, min_distance_m=0.1, pixel_error_px=1.0, **kwargs):
     """Point cloud from an AR recording (`recording.json` as dict) and its frames' JPEG bytes (same order); returns `ReconstructedPoints`.
 
     Settings (config section `sky_obstruction.ar_video`):
     - `heading_offset_deg`: turns the AR coordinates to north; default as in the inspection view (set by hand, else
       from the compass).
-    - `feature` (`orb` or `sift`), `max_features` per frame, `max_image_px`: frames are downscaled to this longer side
-      (None: full size). Frames with lost tracking (emulated position) are not used, nor those taken while turning
+    - `feature` (`orb` or `sift`), `max_features` per frame spread over a `feature_grid` (`detect_features`),
+      `max_image_px`: frames are downscaled to this longer side (None: full size). Frames with lost tracking (emulated position) are not used, nor those taken while turning
       faster than `max_turn_rate_deg_s` (blurred, `frame_turn_rates`).
     - Frame pairs (`select_frame_pairs`): `min_baseline_m`, `max_view_angle_deg` (default half the field of view),
-      `max_pairs_per_frame`.
+      `max_pairs_per_frame`. Short baselines are needed for near objects (their view changes quickly); far points
+      still get enough parallax as tracks join matches over many frames.
     - Matching: candidates within `max_pose_error_px` of the epipolar line of the recorded poses (generous, as the
       poses may be off by a degree), Lowe's `ratio` test, then checked against the images alone (`verify_matches`,
       `ransac_px`); a pair needs at least `min_pair_matches` matches.
@@ -274,11 +297,11 @@ def reconstruct_points(recording, frame_images, heading_offset_deg=None, feature
     timings["decode_s"] = time.perf_counter() - start
 
     start = time.perf_counter()
-    detector, norm = feature_detector(feature, max_features)
+    _, norm = feature_detector(feature, max_features)
     keypoints, descriptors = [], []
     for image, use in zip(images, usable):
-        found, described = detector.detectAndCompute(image, None) if use else ((), None)
-        keypoints.append(np.array([point.pt for point in found], dtype=float).reshape(-1, 2))
+        found, described = detect_features(image, feature, max_features, feature_grid) if use else (np.zeros((0, 2)), None)
+        keypoints.append(found)
         descriptors.append(described)
     timings["features_s"] = time.perf_counter() - start
 
@@ -322,7 +345,7 @@ def reconstruct_points(recording, frame_images, heading_offset_deg=None, feature
                   "n_features": int(offsets[-1]), "n_pairs": len(pairs), "n_pairs_verified": n_verified_pairs, "n_matches": n_matches, "n_verified_matches": len(edges),
                   "pose_disagreement_px": round(float(np.median(pose_disagreement)), 2) if pose_disagreement else None, **adjustment,
                   "n_observations": observation_count, "n_points": len(points), **{key: round(value, 3) for key, value in timings.items()}}
-    settings = {"feature": feature, "max_features": max_features, "max_image_px": max_image_px, "max_turn_rate_deg_s": max_turn_rate_deg_s, "min_baseline_m": min_baseline_m, "max_view_angle_deg": max_view_angle_deg,
+    settings = {"feature": feature, "max_features": max_features, "feature_grid": list(feature_grid), "max_image_px": max_image_px, "max_turn_rate_deg_s": max_turn_rate_deg_s, "min_baseline_m": min_baseline_m, "max_view_angle_deg": max_view_angle_deg,
                 "max_pairs_per_frame": max_pairs_per_frame, "ratio": ratio, "max_pose_error_px": max_pose_error_px, "ransac_px": ransac_px, "min_pair_matches": min_pair_matches, "adjust_poses": adjust_poses,
                 "rotation_prior_deg": rotation_prior_deg, "position_prior_m": position_prior_m,
                 "max_rotation_correction_deg": max_rotation_correction_deg, "max_position_correction_m": max_position_correction_m, "max_adjustment_points": max_adjustment_points, "max_reprojection_px": max_reprojection_px,
@@ -457,7 +480,7 @@ def adjust_frame_poses(poses, tracks, rotation_prior_deg=1.0, position_prior_m=0
     return adjusted, statistics, fits
 
 
-def points_from_tracks(tracks, poses, usable, max_reprojection_px=2.0, min_triangulation_angle_deg=2.0, min_frames=2, min_distance_m=0.3, pixel_error_px=1.0):
+def points_from_tracks(tracks, poses, usable, max_reprojection_px=2.0, min_triangulation_angle_deg=2.0, min_frames=2, min_distance_m=0.1, pixel_error_px=1.0):
     """Triangulate the tracks' observations in usable frames and keep the reliable points; returns the points table (AR coordinates) and the number of observations used."""
     if tracks is None:
         return pd.DataFrame(columns=POINT_COLUMNS, dtype=float), 0
