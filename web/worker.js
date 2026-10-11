@@ -74,10 +74,10 @@ function removeDirectory(directory) {
   pyodide.runPython("import shutil; shutil.rmtree(directory_to_remove, ignore_errors=True)");
 }
 
-// Project zip (#37) from the page's inputs: photos (JPEG bytes), the AR recording's frames (JPEG Blobs, #47) and the
-// point cloud (File) go into Pyodide's file system, Python writes the zip there (with the latest results and the PDF
-// report if `project.include_results`); returns the zip's bytes.
-async function saveProject(project, photos, pointCloud, recording) {
+// Project zip (#37) from the page's inputs: photos (JPEG bytes) and the point cloud (File) go into Pyodide's file
+// system, Python writes the zip there (with the latest results and the PDF report if `project.include_results`);
+// returns the zip's bytes.
+async function saveProject(project, photos, pointCloud) {
   const directory = "/tmp/project_save";
   pyodide.FS.mkdirTree(directory);
   try {
@@ -86,14 +86,6 @@ async function saveProject(project, photos, pointCloud, recording) {
       pyodide.FS.writeFile(path, bytes);
       return { ...photo, path };
     });
-    if (recording) {
-      const framePaths = [];
-      for (const [index, frame] of recording.frames.entries()) {
-        framePaths.push(`${directory}/frame_${index + 1}.jpg`);
-        pyodide.FS.writeFile(framePaths.at(-1), new Uint8Array(await frame.arrayBuffer()));
-      }
-      project.recording = { data: recording.data, frame_paths: framePaths };
-    }
     if (pointCloud) project.point_cloud = { path: await writeFileToPython(pointCloud, `${directory}/point_cloud`), filename: pointCloud.name };
     if (project.include_results) {
       progress(`Loading ${REPORT_PACKAGES.join(", ")} for the PDF report (first time only)`);
@@ -105,14 +97,13 @@ async function saveProject(project, photos, pointCloud, recording) {
   }
 }
 
-// Read a project zip (File): the files found, with the photos, the AR recording's frames and the point cloud as bytes.
+// Read a project zip (File): the files found, with the photos and the point cloud as bytes.
 async function loadProject(file) {
   const directory = "/tmp/project_load";
   pyodide.FS.mkdirTree(directory);
   try {
     const project = JSON.parse(session.load_project(await writeFileToPython(file, `${directory}/project.zip`), `${directory}/files`, file.name));
     for (const photo of project.photos) photo.bytes = pyodide.FS.readFile(photo.path);
-    if (project.recording) project.recording.frames = project.recording.frame_paths.map(path => new Blob([pyodide.FS.readFile(path)], { type: "image/jpeg" }));
     if (project.point_cloud) project.point_cloud.bytes = pyodide.FS.readFile(project.point_cloud.path);
     return project;
   } finally {
@@ -141,7 +132,6 @@ const actions = {
   // Pyodide passes null as JsNull, but undefined as None: an unknown site is undefined.
   startEditing: (nSkyNodes, latitude, longitude) => JSON.parse(session.start_editing(nSkyNodes, latitude ?? undefined, longitude ?? undefined)),
   projectSky: view => JSON.parse(session.project_sky(JSON.stringify(view))),
-  recordingSummary: (data, headingOffsetDeg, latitude, longitude) => JSON.parse(session.recording_summary(JSON.stringify(data), headingOffsetDeg ?? undefined, latitude ?? undefined, longitude ?? undefined)),
   applyEdits: (obstructed, methods, details) => JSON.parse(session.apply_edits(JSON.stringify(obstructed), JSON.stringify(methods), JSON.stringify(details))),
   compute: config => JSON.parse(session.compute(JSON.stringify(config))),
   configYaml: config => browser.config_yaml_from_json(JSON.stringify(config)),

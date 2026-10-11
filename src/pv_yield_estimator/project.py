@@ -1,4 +1,4 @@
-"""Project files: all files of a project (config, weather, obstruction, photos, AR recording, point cloud, results) in one zip (#37).
+"""Project files: all files of a project (config, weather, obstruction, photos, point cloud, results) in one zip (#37).
 
 The zip has fixed file names, so loading needs no questions; `project.yaml` lists the contents, with the format
 version, the creation date and the program version. Every file is optional: saving adds a file only if it is
@@ -24,8 +24,6 @@ CONFIG_NAME = "config.yaml"
 OBSTRUCTED_SKY_NAME = "obstructed_sky.json"
 PHOTOS_NAME = "photos.json"
 PHOTOS_DIRECTORY = "photos"
-### AR video recording (#47): the metadata, with the frames as recording/frame_<n>.jpg.
-RECORDING_NAME = "recording.json"
 IRRADIATION_NAME = "irradiation.json"
 REPORT_NAME = "report.pdf"
 RESULTS_DIRECTORY = "results"

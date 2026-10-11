@@ -20,7 +20,6 @@ import pytest
 
 from pv_yield_estimator.browser import BrowserSession, config_json_from_yaml, config_yaml_from_json, site_name, site_name_result, site_search, site_search_results, versions, weather_downloads
 from pv_yield_estimator.core.photo import camera_orientation_from_device
-from synthetic_recording import synthetic_recording
 from test_weather import open_meteo_response
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -165,33 +164,6 @@ def test_session_project_minimal_and_errors(tmp_path):
         session.load_project(str(tmp_path / "no.zip"), str(tmp_path / "files"), "no.zip")
 
 
-def test_session_ar_recording(tmp_path):
-    """An AR recording (#47) is summarized with its frames as camera views (axes for the sky map) and goes through a project zip as recording.json plus the frames' JPEGs."""
-    recording, images, true_views = synthetic_recording(70.0)
-    session = BrowserSession()
-    summary = json.loads(session.recording_summary(json.dumps(recording), None, 47.996, 7.849))
-    assert summary["n_frames"] == 12 and summary["heading_offset_deg"] == pytest.approx(70.0) and summary["gps_distance_km"] == pytest.approx(0.0)
-    assert summary["cameras"][0]["forward"] == pytest.approx(true_views[0].forward) and summary["cameras"][0]["focal_length_px"] == pytest.approx(true_views[0].focal_length_px)
-    assert json.loads(session.recording_summary(json.dumps(recording), 80.0))["views"][0]["azimuth_deg"] == pytest.approx(true_views[0].azimuth_deg + 10)
-    frame_paths = []
-    for number, image in enumerate(images, start=1):
-        frame_paths.append(str(tmp_path / f"frame{number}"))
-        Path(frame_paths[-1]).write_bytes(image)
-    project_path = session.save_project(json.dumps({"config": {}, "recording": {"data": recording, "frame_paths": frame_paths}}), str(tmp_path / "project.zip"))
-    with zipfile.ZipFile(project_path) as archive:
-        assert {"recording.json", "recording/frame_1.jpg", "recording/frame_12.jpg"} <= set(archive.namelist())
-        assert archive.getinfo("recording/frame_1.jpg").compress_type == zipfile.ZIP_STORED and archive.read("recording/frame_12.jpg") == images[-1]
-    loaded = json.loads(session.load_project(project_path, str(tmp_path / "files"), "project.zip"))
-    assert loaded["recording"]["data"] == recording and [Path(path).read_bytes() for path in loaded["recording"]["frame_paths"]] == images
-    ### A frame missing in the zip is skipped with a warning.
-    with zipfile.ZipFile(project_path) as archive, zipfile.ZipFile(tmp_path / "partial.zip", "w") as partial:
-        for name in archive.namelist():
-            if name != "recording/frame_2.jpg":
-                partial.writestr(name, archive.read(name))
-    loaded = json.loads(session.load_project(str(tmp_path / "partial.zip"), str(tmp_path / "files2"), "partial.zip"))
-    assert len(loaded["recording"]["data"]["frames"]) == len(loaded["recording"]["frame_paths"]) == 11
-
-
 def test_browser_helpers():
     """Site search and weather download URLs, parsing of the search results, config YAML round trip."""
     assert json.loads(site_search("Freiburg")).startswith("https://nominatim.openstreetmap.org/search?q=Freiburg")
@@ -206,7 +178,7 @@ def test_browser_helpers():
 def test_build_site(tmp_path):
     """The site holds the page, the worker and the package zip."""
     site = load_build_site_module().build_site(tmp_path / "site")
-    for path in ("index.html", "app.js", "sky_editor.js", "heading.js", "ar_recording.js", "worker.js", "style.css", "proof/index.html"):
+    for path in ("index.html", "app.js", "sky_editor.js", "heading.js", "worker.js", "style.css", "proof/index.html"):
         assert (site / path).is_file(), path
     with zipfile.ZipFile(site / "pv_yield_estimator.zip") as archive:
         names = archive.namelist()
@@ -549,52 +521,6 @@ def test_browser_page_computes_sample(tmp_path, session):
             ### Kept in the config, so also in the browser's storage and in a saved project.
             page.click("#menu-button")
             assert f"fov_deg: {round(expected_fov, 1)}".encode() in download("#config-save")
-            ### AR recording (#47): headless Chromium offers no immersive AR, so the section says so and can't record; a synthetic recording loaded with a project is
-            ### inspected, and its frames show on the sky map in the right directions (the scene's colour south-south-west, 25° up).
-            page.click("#tabs [data-tab=obstruction]")
-            page.click("#ar-video summary")
-            page.wait_for_function("!document.getElementById('ar-support').textContent.startsWith('Checking')", timeout=10_000)
-            assert "needs Chrome on Android" in page.text_content("#ar-support") and page.is_disabled("#recording-start") and page.locator("#recording-inspection").is_hidden()
-            recording, images, _ = synthetic_recording(30.0)
-            frame_paths = []
-            for number, image in enumerate(images, start=1):
-                frame_paths.append(str(tmp_path / f"frame_{number}.jpg"))
-                Path(frame_paths[-1]).write_bytes(image)
-            recording_project_path = BrowserSession().save_project(json.dumps({"config": {}, "recording": {"data": recording, "frame_paths": frame_paths}}), str(tmp_path / "recording.pvproject.zip"))
-            page.set_input_files("#project-file", recording_project_path)
-            wait_idle()
-            page.click("#tabs [data-tab=obstruction]")
-            assert page.locator("#recording-inspection").is_visible() and page.evaluate("document.getElementById('ar-video').open")
-            assert "12 frames" in page.text_content("#recording-summary") and "from 12 compass readings" in page.text_content("#recording-summary") and page.input_value("#recording-reference") == "synthetic reference"
-            assert page.input_value("#recording-heading") == "30" and page.locator("#recording-frames img").count() == 2
-            page.click("#recording-diagnostics-details summary")
-            page.context.grant_permissions(["clipboard-read", "clipboard-write"])
-            page.click("#recording-diagnostics-copy")
-            page.wait_for_function("document.getElementById('recording-diagnostics-copy').textContent === 'Copied'", timeout=5_000)
-            assert json.loads(page.evaluate("navigator.clipboard.readText()"))["camera_image"] == "160 x 120"
-            assert json.loads(page.text_content("#recording-diagnostics"))["camera_path_m"]["start_to_end"] == pytest.approx(np.linalg.norm([2.0, 0.1 * np.sin(3), 0.3]), abs=0.001)
-            page.wait_for_function("[...document.querySelectorAll('#recording-frames img')].every(image => image.complete && image.naturalWidth === 160)", timeout=10_000)
-            median_colour = ("([azimuth, elevation]) => { const radius = 360 * (90 - elevation) / 90, x = Math.round(400 + radius * Math.sin(azimuth * Math.PI / 180)), y = Math.round(400 - radius * Math.cos(azimuth * Math.PI / 180));"
-                             " const data = document.getElementById('sky-map-canvas').getContext('2d').getImageData(x - 4, y - 4, 9, 9).data;"
-                             " return [0, 1, 2].map(channel => data.filter((_, index) => index % 4 === channel).sort((a, b) => a - b)[40]); }")
-            assert page.evaluate(median_colour, [200, 25]) == pytest.approx([160, 40, 180], abs=30)
-            ### A heading set by hand turns the frames: 90° more shows the same scene 90° further clockwise (west instead of south-south-west), and south-east is no longer covered; "From the compass" goes back.
-            page.fill("#recording-heading", "120")
-            page.press("#recording-heading", "Enter")
-            wait_idle()
-            assert page.evaluate(median_colour, [290, 15]) == pytest.approx([160, 40, 180], abs=30) and page.evaluate(median_colour, [150, 15]) == pytest.approx([91, 127, 166], abs=10)
-            assert "set by hand" in page.text_content("#recording-summary")
-            page.click("#recording-heading-compass")
-            wait_idle()
-            assert page.input_value("#recording-heading") == "30"
-            ### Saved again with the project.
-            page.click("#menu-button")
-            with zipfile.ZipFile(io.BytesIO(download("#project-save"))) as archive:
-                assert {"recording.json", "recording/frame_1.jpg", "recording/frame_12.jpg"} <= set(archive.namelist())
-                assert json.loads(archive.read("recording.json"))["frames"] == recording["frames"]
-            page.click("#recording-remove")
-            wait_idle()
-            assert page.locator("#recording-inspection").is_hidden()
             ### An error shows one line at the top (no traceback); the log has the traceback.
             bad_sky_path = tmp_path / "not_a_sky.json"
             bad_sky_path.write_text('{"kind": "something else"}')

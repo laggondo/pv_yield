@@ -4,8 +4,7 @@
 // drawn over both; tapping or dragging marks the patches as obstructed or frees them, as set by the mode switch (one
 // setting, shown above both). On photos, the sky grid can be moved to match the photo, and the sky map can be zoomed
 // (right mouse button or two fingers; see CONTROLS_TEXT). The sky map shows the photos merged onto the hemisphere, and
-// the live camera view shows which patches the photos cover. The frames of an AR recording (#47) can be merged onto
-// the sky map as well, as read-only images (`setFrameSources`). All views show the sun paths of the solstices and
+// the live camera view shows which patches the photos cover. All views show the sun paths of the solstices and
 // equinoxes, so photos can focus on the relevant part of the sky. The current obstructed sky description (loaded,
 // computed from LiDAR, or free) is the start state, and the edits are baked into the flags (#12).
 // The camera geometry (sensor angles to camera orientation, projection of the sky nodes to pixels) is computed in
@@ -47,7 +46,6 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   let selected = null;                 // the photo shown for marking, or null
   const methodsUsed = new Set();
   let skyMapPhotos = null;             // canvas with the photos merged onto the sky map; null: to be recomputed
-  let frameSources = [];               // frames of an AR recording on the sky map: [{camera: {right, up, forward, focal_length_px}, width, height, data}]
   const skyMapZoom = { factor: 1, x: 0, y: 0 };   // sky map shown at factor × size, shifted by (x, y) canvas pixels
   let markValue = 1;                   // what tapping sets: 1 marks as obstructed, 0 frees
   let photosChangedTimer = null;
@@ -113,18 +111,15 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     return `${Math.round(100 * coveredAngle / totalAngle)} %`;
   }
 
-  // The photos (and the recorded frames) mapped onto the sky map: each pixel shows the direction it stands for, taken
-  // from the photo that sees this direction closest to its image centre (least distorted; seams lie halfway between
-  // photo centres). Directions outside all photos keep the background colour. The camera axes come from Python
-  // (projectSky, recordingSummary).
+  // The photos mapped onto the sky map: each pixel shows the direction it stands for, taken from the photo that sees
+  // this direction closest to its image centre (least distorted; seams lie halfway between photo centres). Directions
+  // outside all photos keep the background colour. The camera axes come from Python (projectSky).
   function mergedSkyMapCanvas() {
     const image = new ImageData(SKY_MAP_PX, SKY_MAP_PX);
     const sources = photos.filter(photo => photo.projection).map(photo => {
       photo.pixelData ??= photo.image.getContext("2d").getImageData(0, 0, photo.image.width, photo.image.height).data;
       return { ...photo.projection.camera, width: photo.image.width, height: photo.image.height, data: photo.pixelData };
-    }).concat(frameSources.map(({ camera, width, height, data }) => ({ ...camera, width, height, data })));
-    // Directions further from the viewing direction than the image corners can't be in the image: skipped early.
-    for (const photo of sources) photo.minDepth = Math.cos(Math.atan(Math.hypot(photo.width, photo.height) / 2 / photo.focal_length_px));
+    });
     const centre = SKY_MAP_PX / 2;
     for (let y = 0; y < SKY_MAP_PX; y++) {
       for (let x = 0; x < SKY_MAP_PX; x++) {
@@ -137,7 +132,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
         let best = null, bestScore = 0;
         for (const photo of sources) {
           const depth = direction[0] * photo.forward[0] + direction[1] * photo.forward[1] + direction[2] * photo.forward[2];
-          if (depth <= photo.minDepth) continue;
+          if (depth <= 0) continue;
           const u = photo.width / 2 + photo.focal_length_px * (direction[0] * photo.right[0] + direction[1] * photo.right[1] + direction[2] * photo.right[2]) / depth;
           const v = photo.height / 2 - photo.focal_length_px * (direction[0] * photo.up[0] + direction[1] * photo.up[1] + direction[2] * photo.up[2]) / depth;
           // Distance to the nearest image edge relative to the image size: > 0 inside, largest at the centre.
@@ -242,7 +237,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     context.fillStyle = `rgb(${SKY_MAP_BACKGROUND.join(", ")})`;
     context.fillRect(0, 0, SKY_MAP_PX, SKY_MAP_PX);
     context.setTransform(skyMapZoom.factor, 0, 0, skyMapZoom.factor, skyMapZoom.x, skyMapZoom.y);
-    if (element("sky-map-photos").checked && (photos.some(photo => photo.projection) || frameSources.length)) {
+    if (element("sky-map-photos").checked && photos.some(photo => photo.projection)) {
       skyMapPhotos ??= mergedSkyMapCanvas();
       context.drawImage(skyMapPhotos, 0, 0);
     }
@@ -883,14 +878,6 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     drawSkyMap();
   }
 
-  // Show the frames of an AR recording on the sky map (merged with the photos), e.g. after recording or after changing
-  // its heading offset; [] removes them.
-  function setFrameSources(sources) {
-    frameSources = sources;
-    skyMapPhotos = null;
-    drawSkyMap();
-  }
-
   // ---- Start state ----
 
   // (Re)start marking from the current obstructed sky description (or a free sky), e.g. after loading another one or
@@ -918,7 +905,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   element("sky-map-photos").addEventListener("change", drawSkyMap);
 
   return {
-    reload, redraw: draw, setFrameSources, startCamera, startCalibration, stopCamera, takePhoto, loadPhotoFile, photoSetText, photoFiles, setPhotos,
+    reload, redraw: draw, startCamera, startCalibration, stopCamera, takePhoto, loadPhotoFile, photoSetText, photoFiles, setPhotos,
     get isStarted() { return sky !== null; },
     get hasPhotos() { return photos.length > 0; },
   };
