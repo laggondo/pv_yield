@@ -129,6 +129,9 @@ const actions = {
   computeObstruction: async (file, config) => JSON.parse(session.compute_obstruction(await writeFileToPython(file, "/tmp/point_cloud"), file.name, JSON.stringify(config))),
   obstructedSkyText: () => session.obstructed_sky_text(),
   clearObstructedSky: () => session.clear_obstructed_sky(),
+  selectGroup: name => JSON.parse(session.select_group(name)),
+  deleteGroup: name => session.delete_group(name),
+  panelSky: config => JSON.parse(session.panel_sky(JSON.stringify(config))),
   // Pyodide passes null as JsNull, but undefined as None: an unknown site is undefined.
   startEditing: (nSkyNodes, latitude, longitude) => JSON.parse(session.start_editing(nSkyNodes, latitude ?? undefined, longitude ?? undefined)),
   projectSky: view => JSON.parse(session.project_sky(JSON.stringify(view))),

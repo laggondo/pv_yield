@@ -2,6 +2,10 @@
 // as a small rectangle in the map's centre. Panning the map moves the panel and with it the site (the panel always stays
 // in the centre, zooming keeps it there); the handle at the end of the line from the panel shows the direction the panel
 // faces and turns it (the azimuth field). Leaflet is loaded from the CDN when the map is first shown; tiles need network access.
+// Photo groups (#55): with several groups, group A sits at the site (the map's centre) and the other groups are
+// draggable lettered markers placed where their photos were taken; the panel can then be dragged away from A, and the
+// obstruction is interpolated for its position. Positions are kept as offsets east/north in metres relative to A, so
+// panning the map (moving the site) moves them all.
 
 const LEAFLET_URL = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist";
 const DEFAULT_ZOOM = 19;
@@ -13,6 +17,8 @@ const HANDLE_DISTANCE_PX = 75;
 const OVERLAY_SIZE_PX = 2 * HANDLE_DISTANCE_PX + 70;
 // Decimals of the coordinates the map reports (about 1 m), as in the site fields.
 const COORDINATE_DECIMALS = 5;
+// Metres per degree of latitude (spherical earth, as Leaflet's default projection), for the offsets relative to group A.
+const METRES_PER_DEGREE = 6378137 * Math.PI / 180;
 
 // Load Leaflet's stylesheet and module once.
 let leafletPromise = null;
@@ -31,13 +37,19 @@ function azimuthOfScreenDirection(dx, dy) {
 
 // The panel map in the element "panel-map". Callbacks: `position()` gives the panel's position, i.e. the site
 // ({latitude, longitude}, or null if there is none yet), `azimuth()` the panel's azimuth (null: optimized),
-// `onAzimuth(degrees)` and `onPosition(latitude, longitude)` report the user's changes.
-export function createPanelMap({ element, report, position, azimuth, onAzimuth, onPosition }) {
+// `onAzimuth(degrees)` and `onPosition(latitude, longitude)` report the user's changes. Photo groups: `groups()` gives
+// [{name, offset: [east, north, up]}] (empty with a single group: no markers, the panel stays at the site),
+// `panelOffset()` the panel's [east, north, up]; `onGroupMoved(name, east, north)` and `onPanelMoved(east, north)` report drags.
+export function createPanelMap({ element, report, position, azimuth, onAzimuth, onPosition, groups, panelOffset, onGroupMoved, onPanelMoved }) {
   const container = element("panel-map");
   const wrap = container.parentElement;
   const note = element("panel-map-note");
   let map = null;
   let leaflet = null;
+  const markers = new Map();           // group name -> Leaflet marker
+  let groupLine = null;                // dashed line through the groups
+  let panelDrag = null;
+  let fittedToGroups = false;          // zoomed in on the groups once they appeared                // {dx, dy} pointer offset from the panel's centre while dragging it
 
   // The overlay over the map's centre: the panel (rectangle, its long side across the facing direction, the facing edge
   // drawn thicker), the line to the handle and the handle. Only the handle takes pointer events; the rest goes to the map.
@@ -51,11 +63,13 @@ export function createPanelMap({ element, report, position, azimuth, onAzimuth, 
       <rect class="panel" x="-22" y="-13" width="44" height="26"></rect>
       <line class="facing-edge" x1="-22" y1="-13" x2="22" y2="-13"></line>
       <circle class="centre" r="3"></circle>
+      <rect class="panel-target" x="-26" y="-17" width="52" height="34"></rect>
       <circle class="handle-target" cx="0" cy="${-HANDLE_DISTANCE_PX}" r="32"></circle>
       <circle class="handle" cx="0" cy="${-HANDLE_DISTANCE_PX}" r="12"></circle>
     </g>`;
   const rotating = overlay.querySelector(".rotating");
   const handleTarget = overlay.querySelector(".handle-target");
+  const panelTarget = overlay.querySelector(".panel-target");
   wrap.appendChild(overlay);
 
   // Turn the overlay to the azimuth; an empty azimuth (optimized) is shown faded, facing south.
@@ -84,6 +98,101 @@ export function createPanelMap({ element, report, position, azimuth, onAzimuth, 
   // On phones, a finger on the handle would scroll the page after a few pixels (and cancel the turning): only cancelling
   // the touch events stops that (cancelling the pointer events doesn't, and `touch-action` isn't honoured on SVG shapes everywhere).
   for (const type of ["touchstart", "touchmove"]) handleTarget.addEventListener(type, event => event.preventDefault(), { passive: false });
+
+  // ---- Photo groups: markers, the panel's position ----
+
+  // Latitude/longitude of an offset [east, north] in metres from the site (group A, the map's centre).
+  function latLngOf(offset) {
+    const { lat, lng } = map.getCenter();
+    return leaflet.latLng(lat + offset[1] / METRES_PER_DEGREE, lng + offset[0] / (METRES_PER_DEGREE * Math.cos(lat * Math.PI / 180)));
+  }
+
+  // Offset [east, north] in metres from the site of a map position, rounded to centimetres.
+  function offsetOf(latLng) {
+    const { lat, lng } = map.getCenter();
+    const round = value => Math.round(value * 100) / 100;
+    return [round((latLng.lng - lng) * METRES_PER_DEGREE * Math.cos(lat * Math.PI / 180)), round((latLng.lat - lat) * METRES_PER_DEGREE)];
+  }
+
+  // The overlay (panel, line and handle) at the panel's position: the map's centre with a single group or the panel at A.
+  function placePanel() {
+    if (!map) return;
+    const point = map.latLngToContainerPoint(latLngOf(panelOffset()));
+    overlay.style.left = `${point.x}px`;
+    overlay.style.top = `${point.y}px`;
+  }
+
+  // Markers of the groups (lettered circles; B, C, ... draggable, A fixed at the site) and the dashed line through
+  // them; none with a single group. The panel becomes draggable with several groups.
+  function drawGroups() {
+    if (!map) return;
+    const current = groups();
+    overlay.classList.toggle("movable", current.length > 1);
+    for (const [name, marker] of markers) {
+      if (!current.some(group => group.name === name)) {
+        marker.remove();
+        markers.delete(name);
+      }
+    }
+    for (const { name, offset } of current) {
+      let marker = markers.get(name);
+      if (!marker) {
+        const icon = leaflet.divIcon({ className: "group-marker", html: `<span>${name}</span>`, iconSize: [30, 30] });
+        // Group A sits at the site, under the panel by default: not draggable and not in the way of dragging the panel.
+        marker = leaflet.marker(latLngOf(offset), { icon, draggable: name !== "A", interactive: name !== "A", keyboard: false, title: `Photo group ${name}`, zIndexOffset: name === "A" ? 0 : 500 }).addTo(map);
+        marker.on("drag", drawGroupLine);
+        marker.on("dragend", () => {
+          const [east, north] = offsetOf(marker.getLatLng());
+          onGroupMoved(name, east, north);
+        });
+        markers.set(name, marker);
+      }
+      if (!marker.dragging?.moved?.()) marker.setLatLng(latLngOf(offset));
+    }
+    drawGroupLine();
+    placePanel();
+    // Zoom in on the groups when they first appear (a few metres apart; the default zoom shows them on top of each other).
+    if (current.length > 1 && !fittedToGroups) {
+      fittedToGroups = true;
+      const extentM = Math.max(...[...current.map(({ offset }) => offset), panelOffset()].map(([east, north]) => Math.max(Math.abs(east), Math.abs(north))), 1);
+      const { x: width, y: height } = map.getSize();
+      const metresPerPixelAtZoom0 = 156543.03 * Math.cos(map.getCenter().lat * Math.PI / 180);
+      const zoom = Math.floor(Math.log2(metresPerPixelAtZoom0 * 0.3 * Math.min(width, height) / extentM));
+      if (Number.isFinite(zoom)) map.setZoom(Math.max(15, Math.min(21, zoom)), { animate: false });
+    }
+    if (current.length < 2) fittedToGroups = false;
+  }
+
+  function drawGroupLine() {
+    const points = groups().map(({ name }) => markers.get(name)?.getLatLng()).filter(Boolean);
+    groupLine?.remove();
+    groupLine = points.length > 1 ? leaflet.polyline(points, { color: "#333", weight: 2, dashArray: "4 6", interactive: false }).addTo(map) : null;
+  }
+
+  // Dragging the panel (several groups only) moves it relative to the site; the map itself stays.
+  panelTarget.addEventListener("pointerdown", event => {
+    if (!map || groups().length < 2) return;
+    event.preventDefault();
+    event.stopPropagation();
+    panelTarget.setPointerCapture(event.pointerId);
+    const box = overlay.getBoundingClientRect();
+    panelDrag = { dx: event.clientX - (box.left + box.width / 2), dy: event.clientY - (box.top + box.height / 2) };
+  });
+  panelTarget.addEventListener("pointermove", event => {
+    if (!panelDrag || !panelTarget.hasPointerCapture(event.pointerId)) return;
+    const box = container.getBoundingClientRect();
+    overlay.style.left = `${event.clientX - box.left - panelDrag.dx}px`;
+    overlay.style.top = `${event.clientY - box.top - panelDrag.dy}px`;
+  });
+  for (const type of ["pointerup", "pointercancel"]) panelTarget.addEventListener(type, event => {
+    if (!panelDrag) return;
+    panelDrag = null;
+    const box = container.getBoundingClientRect();
+    const [east, north] = offsetOf(map.containerPointToLatLng([event.clientX - box.left, event.clientY - box.top]));
+    onPanelMoved(east, north);
+    placePanel();
+  });
+  for (const type of ["touchstart", "touchmove"]) panelTarget.addEventListener(type, event => { if (groups().length > 1) event.preventDefault(); }, { passive: false });
 
   function showNote(text) {
     note.textContent = text;
@@ -120,6 +229,12 @@ export function createPanelMap({ element, report, position, azimuth, onAzimuth, 
       leaflet.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxNativeZoom: 19, maxZoom: 21, opacity: IMAGERY_OPACITY,
         attribution: "Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community" }).addTo(map);
       leaflet.control.scale({ imperial: false }).addTo(map);
+      // Groups and the panel keep their offsets from the site, which is the map's centre.
+      map.on("move zoom resize", () => {
+        for (const { name, offset } of groups()) markers.get(name)?.setLatLng(latLngOf(offset));
+        drawGroupLine();
+        placePanel();
+      });
       map.on("moveend", () => {
         const current = position(), moved = centre();
         if (!current || !samePosition(current, moved)) onPosition(moved.latitude, moved.longitude);
@@ -128,7 +243,8 @@ export function createPanelMap({ element, report, position, azimuth, onAzimuth, 
     }
     map.invalidateSize();
     if (!samePosition(centre(), start)) map.setView([start.latitude, start.longitude], map.getZoom(), { animate: false });
+    drawGroups();
   }
 
-  return { show, drawAzimuth };
+  return { show, drawAzimuth, drawGroups };
 }

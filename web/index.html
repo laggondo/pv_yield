@@ -76,7 +76,8 @@
   <div class="inputs">
     <fieldset>
       <legend>Obstructed sky</legend>
-      <p class="hint">The sky as seen from the panel: tap patches to mark them as obstructed (red) or free them, as set by the switch. Loading a file, computing from LiDAR or marking on photos (below) changes it; every change is used for the next computation right away.</p>
+      <div id="group-tabs" class="mode-switch" role="group" aria-label="Photo group shown" hidden></div>
+      <p class="hint">The sky as seen from the panel (with several photo groups: from the camera position of the group selected above): tap patches to mark them as obstructed (red) or free them, as set by the switch. Loading a file, computing from LiDAR or marking on photos (below) changes it; every change is used for the next computation right away.</p>
       <div class="mode-switch" role="group" aria-label="What tapping does"><button id="mode-mark" class="small selected" data-mark-value="1" aria-pressed="true">■ Mark</button><button id="mode-free" class="small" data-mark-value="0" aria-pressed="false">□ Free</button></div>
       <canvas id="sky-map-canvas" class="marking-canvas"></canvas>
       <div class="summary" id="sun-path-legend"></div>
@@ -117,8 +118,10 @@
         <label>Camera field of view (°, across the photo's longer side) <input type="number" id="camera_fov_deg" value="65" min="10" max="170" step="any"></label>
         <div class="summary">Main cameras of phones see about 60–70° across the longer side (default 65°). Calibrate it once per phone: in the camera, put a distant object on one of two lines, then turn the phone until it sits on the other. Applies to new photos.</div>
         <button id="fov-calibrate" class="small" disabled>Calibrate field of view (camera)</button>
+        <p class="hint">Photo groups: the photos of a group are taken from one camera position, and each group gives its own sky map. To compute the obstruction for other panel positions (e.g. along a balcony or a garage top), take a group at each end and place them on the map (tab Panel). Within a group, turn on the spot instead of walking; take all groups at the same height (e.g. chest height). When continuing a group later, go back to the same spot.</p>
         <div class="buttons">
           <button id="camera-start" disabled>Take photos (camera)</button>
+          <button id="group-new" disabled>New photo group (camera)</button>
           <label class="button small">Load photo or photo set <input type="file" id="photo-file" hidden></label>
           <button id="photos-save" class="small">Save photos</button>
         </div>
@@ -146,7 +149,16 @@
       <legend>Orientation</legend>
       <p class="hint">Pan the map to place the panel (this sets the site), drag the round handle to turn it.</p>
       <div class="panel-map-wrap" hidden><div id="panel-map"></div></div>
-            <p class="summary" id="panel-map-note" hidden></p>
+      <p class="summary" id="panel-map-note" hidden></p>
+      <div id="group-positions" hidden>
+        <p class="hint">Photo groups: drag the lettered markers to where the photos were taken (group A is at the site), and the panel to its place; the obstruction is computed for the panel's position. Or enter the positions in metres from group A.</p>
+        <div class="positions" id="position-rows"></div>
+        <div class="summary" id="group-distances"></div>
+        <div id="panel-sky" hidden>
+          <canvas id="panel-sky-canvas" class="marking-canvas"></canvas>
+          <div class="summary" id="panel-sky-summary"></div>
+        </div>
+      </div>
       <div class="orientation-rows">
         <span></span><span class="column-title">Tilt (°)</span><span class="column-title">Azimuth (°)</span><span></span>
         <span class="row-title">Panel</span>

@@ -7,6 +7,7 @@ executable instead of Playwright's own), PV_YIELD_CHROMIUM_ARGS (extra Chromium 
 trust a proxy's CA with --ignore-certificate-errors-spki-list=<hash>) and HTTPS_PROXY (passed to Chromium).
 """
 
+import contextlib
 import importlib.util
 import io
 import json
@@ -14,6 +15,7 @@ import mimetypes
 import os
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -201,11 +203,16 @@ def swipe_up_over(page, selector):
     return scroll_before, page.evaluate("window.scrollY")
 
 
-@pytest.mark.skipif(os.environ.get("PV_YIELD_BROWSER_TEST") != "1", reason="headless browser test; set PV_YIELD_BROWSER_TEST=1 (needs Playwright and network access to the Pyodide and Bokeh CDNs)")
-def test_browser_page_computes_sample(tmp_path, session):
-    """Headless Chromium as a phone: the page loads Pyodide, searches the site and downloads weather (canned answers), computes without obstruction and with the sample files (same key
-    figures as the native session), exports zip and PDF, marks obstructions on the sky map, a loaded photo and a camera photo (Chromium's fake camera), computes the obstruction from the
-    LiDAR sample, saves all inputs as a project and loads it again, and restores the inputs after a reload; a swipe over a plot scrolls the page; the steps are in tabs."""
+BROWSER_TEST = pytest.mark.skipif(os.environ.get("PV_YIELD_BROWSER_TEST") != "1", reason="headless browser test; set PV_YIELD_BROWSER_TEST=1 (needs Playwright and network access to the Pyodide and Bokeh CDNs)")
+
+
+@contextlib.contextmanager
+def app_page(tmp_path):
+    """The built site in headless Chromium as a phone, loaded until Python is ready; yields the page and helpers (wait_idle, download, tap_canvas).
+
+    Requests to the site search, the weather service and the map tiles get canned answers; the console messages are
+    printed at the end.
+    """
     sync_api = pytest.importorskip("playwright.sync_api")
     site = load_build_site_module().build_site(tmp_path / "site")
 
@@ -226,7 +233,6 @@ def test_browser_page_computes_sample(tmp_path, session):
     launch_options["args"] = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] + os.environ.get("PV_YIELD_CHROMIUM_ARGS", "").split()
     if os.environ.get("HTTPS_PROXY"):
         launch_options["proxy"] = {"server": os.environ["HTTPS_PROXY"]}
-    expected = json.loads(session.compute(json.dumps({"panel": PANEL})))["key_figures"]
     with sync_api.sync_playwright() as playwright:
         browser = playwright.chromium.launch(**launch_options)
         context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, accept_downloads=True, geolocation={"latitude": 47.99609, "longitude": 7.8494}, permissions=["geolocation"])
@@ -266,270 +272,426 @@ def test_browser_page_computes_sample(tmp_path, session):
             page.goto(f"{SITE_ORIGIN}/")
             page.wait_for_function("['ready', 'error'].includes(document.body.dataset.state)", timeout=300_000)
             assert page.evaluate("document.body.dataset.state") == "ready", page.text_content("#log")
-            ### Tabs: the first one (site and weather) is shown at the start.
-            assert page.locator("#tab-site").is_visible() and page.locator("#tab-panel").is_hidden() and page.get_attribute("#tabs [data-tab=site]", "aria-selected") == "true"
-            ### The results tab without weather data says what is missing.
-            page.click("#tabs [data-tab=results]")
-            assert "need weather data" in page.text_content("#results-empty") and page.locator("#results").is_hidden()
-            page.click("#tabs [data-tab=site]")
-            ### Site search and weather download.
-            page.fill("#site-query", "Freiburg")
-            page.click("#site-search")
-            wait_idle()
-            assert page.input_value("#site-latitude") == "47.99600" and "lat=47.9960" in page.get_attribute("#pvgis-link", "href") and page.get_attribute("#pvgis-link", "href").endswith("browser=1")
-            page.click("#weather-download")
-            wait_idle()
-            assert "Open-Meteo" in page.text_content("#weather-summary")
-            ### GPS: the coordinates and the place field (from the reverse search) are updated, the list of found places is hidden.
-            page.click("#site-gps")
-            wait_idle()
-            assert page.input_value("#site-latitude") == "47.99609" and page.input_value("#site-query").startswith("Rathausplatz") and page.locator("#site-results-label").is_hidden()
-            ### The sample weather file, without the searched site, so the result matches the native session; first without obstruction (free sky).
-            page.fill("#site-latitude", "")
-            page.fill("#site-longitude", "")
-            page.set_input_files("#weather-file", WEATHER_PATH)
-            wait_idle()
-            assert "no obstruction" in page.text_content("#sky-summary")
-            ### Opening the results tab computes; a new input while it is shown computes again.
-            page.click("#tabs [data-tab=results]")
-            wait_idle()
-            assert page.evaluate("window.pvYieldApp.lastResult.key_figures.shading_loss") == pytest.approx(0.0, abs=1e-12)
-            page.set_input_files("#sky-file", SKY_PATH)
-            wait_idle()
-            assert page.evaluate("document.body.dataset.state") == "computed", page.text_content("#log")
-            assert page.locator("#tab-results").is_visible() and page.locator("#tab-site").is_hidden() and page.url.endswith("#/results")
-            key_figures = page.evaluate("window.pvYieldApp.lastResult.key_figures")
-            for plot in ("sky_hemisphere", "monthly_profiles", "daily_bars", "carpet", "orientation"):
-                assert page.locator(f"#plot-{plot} > *").count() > 0, f"plot {plot} not rendered"
-            assert page.locator("#orientations tr").count() >= 4
-            scroll_before, scroll_after = swipe_up_over(page, "#plot-sky_hemisphere")
-            assert scroll_after > scroll_before + 100, f"a swipe over the sky plot did not scroll the page (scrollY {scroll_before} -> {scroll_after})"
-            page.screenshot(path=tmp_path / "page.png", full_page=True)
-            ### Exports.
-            with zipfile.ZipFile(io.BytesIO(download("#export-zip"))) as archive:
-                assert {"results.json", "config.yaml", "hourly.csv", "obstructed_sky.json"} <= set(archive.namelist())
-            assert download("#export-pdf").startswith(b"%PDF")
-            page.click("#menu-button")
-            assert b"tilt_deg: 15" in download("#config-save")
-            assert page.locator("#menu").is_hidden()
-            ### The log below the tab, collapsed at first.
-            assert page.locator("#log").is_hidden()
-            page.click("#log-details summary")
-            assert page.locator("#log").is_visible() and "Computed" in page.text_content("#log")
-            ### Panel map (#38), at the weather data's coordinates (the site is empty): dragging the handle (pointing south) to the east of the panel turns it to 90°; panning the map moves
-            ### the panel and sets the site (cleared again afterwards, so the results match the native session).
-            page.click("#tabs [data-tab=panel]")
-            page.wait_for_selector("#panel-map.leaflet-container", timeout=60_000)
-            page.evaluate("(() => { const box = document.getElementById('panel-map').getBoundingClientRect(); window.scrollBy(0, box.top + box.height / 2 - window.innerHeight / 2); })()")
-            page.wait_for_timeout(1000)
-            map_box = page.locator("#panel-map").bounding_box()
-            centre_x, centre_y = map_box["x"] + map_box["width"] / 2, map_box["y"] + map_box["height"] / 2
-            ### With a finger (touch events, as on a phone): the page must not scroll instead.
-            scroll_before = page.evaluate("window.scrollY")
-            touch = page.context.new_cdp_session(page)
-            touch.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": centre_x, "y": centre_y + 75}]})
-            for step in range(1, 11):
-                angle = np.radians(9 * step)          ### along the circle from south to east
-                touch.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": centre_x + 75 * np.sin(angle), "y": centre_y + 75 * np.cos(angle)}]})
-            touch.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
-            page.wait_for_timeout(500)
-            assert page.input_value("#azimuth_deg") == "90" and page.input_value("#site-latitude") == "" and page.evaluate("window.scrollY") == scroll_before
-            page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.8 * map_box["height"])
-            page.mouse.down()
-            page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.5 * map_box["height"], steps=5)
-            page.mouse.up()
-            page.wait_for_function("document.getElementById('site-latitude').value !== ''", timeout=10_000)
-            weather_latitude = page.evaluate("window.pvYieldApp.lastResult.site.latitude")
-            assert float(page.input_value("#site-latitude")) < weather_latitude          ### dragged up: the panel moved south
-            page.wait_for_function("document.getElementById('site-query').value.startsWith('Rathausplatz')", timeout=10_000)     ### the place name follows (canned reverse search)
-            ### A new site reloads the sky editor (sun paths); the marking below waits for it, so a tap isn't lost in the reload.
-            count_editor_loads = "document.getElementById('log').textContent.split('Marking obstructions on').length"
-            page.wait_for_timeout(500)
-            editor_loads = page.evaluate(count_editor_loads)
-            page.click("#tabs [data-tab=site]")
-            page.fill("#site-latitude", "")
-            page.fill("#site-longitude", "")
-            page.click("#tabs [data-tab=panel]")
-            page.wait_for_function(f"{count_editor_loads} > {editor_loads}", timeout=30_000)
-            page.fill("#azimuth_deg", "180")
-            assert "rotate(180)" in page.get_attribute(".panel-map-overlay .rotating", "transform")
-            ### Orientations to compare as rows: "+" adds one, "×" removes one; the config gets the rows.
-            assert page.locator("#compare-rows input").count() == 0
-            for tilt, azimuth in (("30", "90"), ("45", "200")):
-                page.click("#compare-add")
-                page.locator("#compare-rows input").nth(-2).fill(tilt)
-                page.locator("#compare-rows input").nth(-1).fill(azimuth)
-            page.locator("#compare-rows button.remove").first.click()
-            assert page.input_value("#compare") == "45/200"
-            ### Marking obstructions by hand, starting from the sample: on the sky map (always shown at the top of the tab), on a loaded photo and on camera photos.
-            n_sample_obstructed = sum(json.loads(SKY_PATH.read_text())["obstructed"])
-            page.click("#tabs [data-tab=obstruction]")
-            assert page.locator("#sky-map-canvas").is_visible() and page.input_value("#n_sky_nodes") == "500"   ### the setting that gives the sample's grid
-            tap_canvas("sky-map-canvas", 0.52, 0.48)     ### near the zenith, free in the sample; "Mark" is the default mode
-            page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map')", timeout=60_000)
-            assert f": {n_sample_obstructed + 1} of" in page.text_content("#sky-summary")
-            ### Only one source section is open at a time (#40).
-            page.click("#lidar summary")
-            page.click("#photo summary")
-            assert page.evaluate("document.getElementById('photo').open && !document.getElementById('lidar').open")
-            photo_path = tmp_path / "sky.png"
-            pytest.importorskip("matplotlib.pyplot").imsave(photo_path, np.full((300, 400, 3), 0.7))
-            page.set_input_files("#photo-file", photo_path)
-            wait_idle()
-            assert page.input_value("#photo-azimuth_deg") == "180" and page.input_value("#photo-elevation_deg") == "15" and page.locator("#photo-list .photo-item").count() == 1
-            assert page.locator("#photo-canvas").is_visible()
-            ### The patch in the photo's centre may be obstructed or free in the sample: marking and then freeing it changes it at least once; the switch above the photo is the one above the sky map.
-            tap_canvas("photo-canvas", 0.5, 0.5)
-            page.click("#mode-free-photo")
-            assert "selected" in page.get_attribute("#mode-free", "class")
-            tap_canvas("photo-canvas", 0.5, 0.5)
-            page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map+photo')", timeout=60_000)
-            page.click("#mode-mark")
-            marked_before = page.text_content("#sky-summary")
-            ### Aligning the photo: dragging the sky grid to the right with the right mouse button turns the camera to the left (east of south).
-            page.locator("#photo-canvas").scroll_into_view_if_needed()
-            page.wait_for_timeout(1000)
-            box = page.locator("#photo-canvas").bounding_box()
-            page.mouse.move(box["x"] + 0.5 * box["width"], box["y"] + 0.5 * box["height"])
-            page.mouse.down(button="right")
-            page.mouse.move(box["x"] + 0.7 * box["width"], box["y"] + 0.5 * box["height"], steps=5)
-            page.mouse.up(button="right")
-            page.wait_for_timeout(1000)
-            assert float(page.input_value("#photo-azimuth_deg")) < 175 and page.text_content("#sky-summary") == marked_before
-            ### The sky map shows the photo merged onto the hemisphere: the grey photo's colour south of the zenith, the background in the north.
-            mean_colour = "(x, y) => { const data = document.getElementById('sky-map-canvas').getContext('2d').getImageData(x, y, 10, 10).data; return [0, 1, 2].map(channel => data.filter((_, index) => index % 4 === channel).reduce((sum, value) => sum + value, 0) / 100); }"
-            south, north = page.evaluate(f"({mean_colour})(395, 695)"), page.evaluate(f"({mean_colour})(395, 95)")
-            assert np.abs(np.subtract(south, north)).max() > 20
-            ### Tapping the selected photo's button again hides it.
-            page.click("#photo-list .photo-item >> nth=0 >> button >> nth=0")
-            assert page.locator("#photo-view").is_hidden()
-            page.click("#camera-start")
-            wait_idle()
-            ### The camera stays open for a series of photos, until "Done".
-            for _ in range(2):
-                page.click("#camera-shoot")
-                wait_idle()
-            assert page.locator("#photo-list .photo-item").count() == 3 and page.locator("#camera").is_visible()
-            page.click("#camera-stop")
-            assert page.locator("#camera").is_hidden() and page.locator("#photo-view").is_hidden()
-            photo_set_path = tmp_path / "photo_set.json"
-            photo_set_path.write_bytes(download("#photos-save"))
-            assert len(json.loads(photo_set_path.read_text())["photos"]) == 3
-            ### The trash buttons remove the photos.
-            for remaining in (2, 1, 0):
-                page.click("#photo-list .photo-item >> nth=0 >> button.remove")
-                assert page.locator("#photo-list .photo-item").count() == remaining
-            ### "No obstruction" frees the sky.
-            page.click("#sky-clear")
-            wait_idle()
-            assert "no obstruction" in page.text_content("#sky-summary")
-            ### Obstruction from the LiDAR sample with the sample config's settings (resolution 500 sky nodes, as set from the loaded sample).
-            page.click("#lidar summary")
-            page.fill("#scanner_heading_deg", "188.1")
-            page.set_input_files("#lidar-file", POINT_CLOUD_PATH)
-            page.click("#lidar-compute")
-            wait_idle()
-            assert f"{n_sample_obstructed} of" in page.text_content("#sky-summary")
-            ### Project (#37): with the photo set loaded again, saved with all inputs and the results (computed again, as the inputs changed), then loaded and computed again.
-            page.click("#photo summary")
-            page.set_input_files("#photo-file", photo_set_path)
-            wait_idle()
-            assert page.locator("#photo-list .photo-item").count() == 3
-            page.click("#menu-button")
-            project_path = tmp_path / "project.zip"
-            project_path.write_bytes(download("#project-save"))
-            with zipfile.ZipFile(project_path) as archive:
-                assert {"project.yaml", "config.yaml", "weather.csv", "obstructed_sky.json", "photos.json", "photos/photo_1.jpg", "photos/photo_2.jpg", "point_cloud.csv", "report.pdf", "results/results.json"} <= set(archive.namelist())
-            page.set_input_files("#project-file", project_path)
-            wait_idle()
-            assert page.evaluate("document.body.dataset.state") == "computed" and page.locator("#tab-results").is_visible(), page.text_content("#log")
-            assert page.evaluate("window.pvYieldApp.lastResult.key_figures") == pytest.approx(key_figures, rel=1e-6)
-            assert page.evaluate("document.getElementById('lidar-file').files[0].name") == POINT_CLOUD_PATH.name and "obstructed_sky_2026" in page.text_content("#sky-summary")
-            page.click("#tabs [data-tab=obstruction]")
-            assert page.locator("#photo-list .photo-item").count() == 3
-            ### The inputs are restored after a reload, also the photos (stored a second after the last change).
-            page.wait_for_timeout(2000)
-            page.reload()
-            page.wait_for_function("['ready', 'computed', 'error'].includes(document.body.dataset.state) && !document.getElementById('project-save').disabled", timeout=300_000)
-            assert page.locator("#tab-obstruction").is_visible()                ### the tab is kept in the URL
-            assert "Freiburg-pvgis-tmy.csv" in page.text_content("#weather-summary") and "obstructed_sky_2026" in page.text_content("#sky-summary")
-            assert page.input_value("#scanner_heading_deg") == "188.1"
-            assert page.locator("#photo-list .photo-item").count() == 3
-            ### "No obstruction" removes the obstructed sky description again.
-            page.click("#tabs [data-tab=obstruction]")
-            page.click("#sky-clear")
-            wait_idle()
-            assert "no obstruction" in page.text_content("#sky-summary") and page.is_disabled("#sky-save")
-            ### New project: inputs emptied, the form at its defaults, back on the first tab.
-            page.click("#menu-button")
-            page.click("#project-new")
-            wait_idle()
-            assert page.text_content("#weather-summary") == "not loaded" and page.input_value("#scanner_heading_deg") == "0" and page.locator("#tab-site").is_visible()
-            assert page.evaluate("window.pvYieldApp.lastResult") is None
-            ### Marking on the sky map works after a new project (the session was reset), starting from a free sky.
-            page.click("#tabs [data-tab=obstruction]")
-            tap_canvas("sky-map-canvas", 0.52, 0.48)
-            page.wait_for_function("document.getElementById('sky-summary').textContent.includes(': 1 of')", timeout=60_000)
-            assert page.evaluate("document.body.dataset.state") != "error", page.text_content("#log")
-            ### Camera with both orientation readings, as on Chrome for Android (synthetic events): the gyroscope's (heading from an arbitrary start) and the compass's, 30° apart.
-            ### The shutter waits for a steady compass; the photo gets the compass's heading via the gyroscope; a compass that then disagrees asks for the figure-8 movement and moves the view only slowly.
-            page.evaluate("document.getElementById('photo').open = true")
-            page.click("#camera-start")
-            wait_idle()
-            page.evaluate("""() => {
-                window.compassAlpha = 130;
-                window.sensorTimer = setInterval(() => {
-                    window.dispatchEvent(new DeviceOrientationEvent("deviceorientation", { alpha: 100, beta: 80, gamma: 0, absolute: false }));
-                    window.dispatchEvent(new DeviceOrientationEvent("deviceorientationabsolute", { alpha: window.compassAlpha, beta: 80, gamma: 0, absolute: true }));
-                }, 50);
-            }""")
-            page.wait_for_timeout(500)
-            assert page.is_disabled("#camera-shoot") and "Hold the phone still" in page.text_content("#camera-note")
-            page.wait_for_function("!document.getElementById('camera-shoot').disabled", timeout=10_000)
-            assert page.locator("#camera-note").is_hidden()
-            page.click("#camera-shoot")
-            wait_idle()
-            page.evaluate("window.compassAlpha = 220")
-            page.wait_for_function("document.getElementById('camera-note').textContent.includes('figure 8')", timeout=10_000)
-            assert page.is_enabled("#camera-shoot")
-            page.click("#camera-shoot")
-            wait_idle()
-            page.evaluate("clearInterval(window.sensorTimer)")
-            page.click("#camera-stop")
-            expected_azimuth = camera_orientation_from_device(130, 80, 0)["azimuth_deg"]
-            page.click("#photo-list .photo-item >> nth=0 >> button >> nth=0")
-            assert float(page.input_value("#photo-azimuth_deg")) == pytest.approx(expected_azimuth, abs=0.1)
-            page.click("#photo-list .photo-item >> nth=1 >> button >> nth=0")
-            assert abs(float(page.input_value("#photo-azimuth_deg")) - expected_azimuth) < 10       ### the wild compass moved the view only a little
-            ### Field of view calibration with the gyroscope: an object on one line, then the phone turned by 50° until it sits on the other line (lines at 80 % of the half image).
-            assert page.input_value("#camera_fov_deg") == "65"                    ### the default without calibration
-            page.click("#fov-calibrate")
-            wait_idle()
-            page.evaluate("""() => {
-                window.gyroscopeAlpha = 100;
-                window.sensorTimer = setInterval(() => window.dispatchEvent(new DeviceOrientationEvent("deviceorientation", { alpha: window.gyroscopeAlpha, beta: 90, gamma: 0, absolute: false })), 50);
-            }""")
-            page.wait_for_function("document.getElementById('camera-note').textContent.includes('one yellow line') && !document.getElementById('camera-shoot').disabled", timeout=10_000)
-            page.click("#camera-shoot")
-            page.evaluate("window.gyroscopeAlpha = 50")
-            page.wait_for_function("document.getElementById('camera-note').textContent.includes('other yellow line')", timeout=10_000)
-            page.wait_for_timeout(300)
-            page.click("#camera-shoot")
-            page.evaluate("clearInterval(window.sensorTimer)")
-            expected_fov = 2 * np.degrees(np.arctan(np.tan(np.radians(25)) / 0.8))
-            assert page.locator("#camera").is_hidden() and float(page.input_value("#camera_fov_deg")) == pytest.approx(expected_fov, abs=0.1)
-            ### Kept in the config, so also in the browser's storage and in a saved project.
-            page.click("#menu-button")
-            assert f"fov_deg: {round(expected_fov, 1)}".encode() in download("#config-save")
-            ### An error shows one line at the top (no traceback); the log has the traceback.
-            bad_sky_path = tmp_path / "not_a_sky.json"
-            bad_sky_path.write_text('{"kind": "something else"}')
-            page.evaluate("document.getElementById('sky-load').open = true")
-            page.set_input_files("#sky-file", bad_sky_path)
-            page.wait_for_function("document.body.dataset.state === 'error'", timeout=60_000)
-            error_text = page.text_content("#error")
-            assert "\n" not in error_text and "Traceback" not in error_text and "details in the log" in error_text and "Traceback" in page.text_content("#log")
+            yield SimpleNamespace(page=page, wait_idle=wait_idle, download=download, tap_canvas=tap_canvas)
         finally:
             print("\n".join(messages))
             browser.close()
+
+
+@BROWSER_TEST
+def test_browser_page_computes_sample(tmp_path, session):
+    """Headless Chromium as a phone: the page loads Pyodide, searches the site and downloads weather (canned answers), computes without obstruction and with the sample files (same key
+    figures as the native session), exports zip and PDF, marks obstructions on the sky map, a loaded photo and a camera photo (Chromium's fake camera), computes the obstruction from the
+    LiDAR sample, saves all inputs as a project and loads it again, and restores the inputs after a reload; a swipe over a plot scrolls the page; the steps are in tabs."""
+    expected = json.loads(session.compute(json.dumps({"panel": PANEL})))["key_figures"]
+    with app_page(tmp_path) as app:
+        page, wait_idle, download, tap_canvas = app.page, app.wait_idle, app.download, app.tap_canvas
+        ### Tabs: the first one (site and weather) is shown at the start.
+        assert page.locator("#tab-site").is_visible() and page.locator("#tab-panel").is_hidden() and page.get_attribute("#tabs [data-tab=site]", "aria-selected") == "true"
+        ### The results tab without weather data says what is missing.
+        page.click("#tabs [data-tab=results]")
+        assert "need weather data" in page.text_content("#results-empty") and page.locator("#results").is_hidden()
+        page.click("#tabs [data-tab=site]")
+        ### Site search and weather download.
+        page.fill("#site-query", "Freiburg")
+        page.click("#site-search")
+        wait_idle()
+        assert page.input_value("#site-latitude") == "47.99600" and "lat=47.9960" in page.get_attribute("#pvgis-link", "href") and page.get_attribute("#pvgis-link", "href").endswith("browser=1")
+        page.click("#weather-download")
+        wait_idle()
+        assert "Open-Meteo" in page.text_content("#weather-summary")
+        ### GPS: the coordinates and the place field (from the reverse search) are updated, the list of found places is hidden.
+        page.click("#site-gps")
+        wait_idle()
+        assert page.input_value("#site-latitude") == "47.99609" and page.input_value("#site-query").startswith("Rathausplatz") and page.locator("#site-results-label").is_hidden()
+        ### The sample weather file, without the searched site, so the result matches the native session; first without obstruction (free sky).
+        page.fill("#site-latitude", "")
+        page.fill("#site-longitude", "")
+        page.set_input_files("#weather-file", WEATHER_PATH)
+        wait_idle()
+        assert "no obstruction" in page.text_content("#sky-summary")
+        ### Opening the results tab computes; a new input while it is shown computes again.
+        page.click("#tabs [data-tab=results]")
+        wait_idle()
+        assert page.evaluate("window.pvYieldApp.lastResult.key_figures.shading_loss") == pytest.approx(0.0, abs=1e-12)
+        page.set_input_files("#sky-file", SKY_PATH)
+        wait_idle()
+        assert page.evaluate("document.body.dataset.state") == "computed", page.text_content("#log")
+        assert page.locator("#tab-results").is_visible() and page.locator("#tab-site").is_hidden() and page.url.endswith("#/results")
+        key_figures = page.evaluate("window.pvYieldApp.lastResult.key_figures")
+        for plot in ("sky_hemisphere", "monthly_profiles", "daily_bars", "carpet", "orientation"):
+            assert page.locator(f"#plot-{plot} > *").count() > 0, f"plot {plot} not rendered"
+        assert page.locator("#orientations tr").count() >= 4
+        scroll_before, scroll_after = swipe_up_over(page, "#plot-sky_hemisphere")
+        assert scroll_after > scroll_before + 100, f"a swipe over the sky plot did not scroll the page (scrollY {scroll_before} -> {scroll_after})"
+        page.screenshot(path=tmp_path / "page.png", full_page=True)
+        ### Exports.
+        with zipfile.ZipFile(io.BytesIO(download("#export-zip"))) as archive:
+            assert {"results.json", "config.yaml", "hourly.csv", "obstructed_sky.json"} <= set(archive.namelist())
+        assert download("#export-pdf").startswith(b"%PDF")
+        page.click("#menu-button")
+        assert b"tilt_deg: 15" in download("#config-save")
+        assert page.locator("#menu").is_hidden()
+        ### The log below the tab, collapsed at first.
+        assert page.locator("#log").is_hidden()
+        page.click("#log-details summary")
+        assert page.locator("#log").is_visible() and "Computed" in page.text_content("#log")
+        ### Panel map (#38), at the weather data's coordinates (the site is empty): dragging the handle (pointing south) to the east of the panel turns it to 90°; panning the map moves
+        ### the panel and sets the site (cleared again afterwards, so the results match the native session).
+        page.click("#tabs [data-tab=panel]")
+        page.wait_for_selector("#panel-map.leaflet-container", timeout=60_000)
+        page.evaluate("(() => { const box = document.getElementById('panel-map').getBoundingClientRect(); window.scrollBy(0, box.top + box.height / 2 - window.innerHeight / 2); })()")
+        page.wait_for_timeout(1000)
+        map_box = page.locator("#panel-map").bounding_box()
+        centre_x, centre_y = map_box["x"] + map_box["width"] / 2, map_box["y"] + map_box["height"] / 2
+        ### With a finger (touch events, as on a phone): the page must not scroll instead.
+        scroll_before = page.evaluate("window.scrollY")
+        touch = page.context.new_cdp_session(page)
+        touch.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": centre_x, "y": centre_y + 75}]})
+        for step in range(1, 11):
+            angle = np.radians(9 * step)          ### along the circle from south to east
+            touch.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": centre_x + 75 * np.sin(angle), "y": centre_y + 75 * np.cos(angle)}]})
+        touch.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+        page.wait_for_timeout(500)
+        assert page.input_value("#azimuth_deg") == "90" and page.input_value("#site-latitude") == "" and page.evaluate("window.scrollY") == scroll_before
+        page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.8 * map_box["height"])
+        page.mouse.down()
+        page.mouse.move(map_box["x"] + 0.15 * map_box["width"], map_box["y"] + 0.5 * map_box["height"], steps=5)
+        page.mouse.up()
+        page.wait_for_function("document.getElementById('site-latitude').value !== ''", timeout=10_000)
+        weather_latitude = page.evaluate("window.pvYieldApp.lastResult.site.latitude")
+        assert float(page.input_value("#site-latitude")) < weather_latitude          ### dragged up: the panel moved south
+        page.wait_for_function("document.getElementById('site-query').value.startsWith('Rathausplatz')", timeout=10_000)     ### the place name follows (canned reverse search)
+        ### A new site reloads the sky editor (sun paths); the marking below waits for it, so a tap isn't lost in the reload.
+        count_editor_loads = "document.getElementById('log').textContent.split('Marking obstructions on').length"
+        page.wait_for_timeout(500)
+        editor_loads = page.evaluate(count_editor_loads)
+        page.click("#tabs [data-tab=site]")
+        page.fill("#site-latitude", "")
+        page.fill("#site-longitude", "")
+        page.click("#tabs [data-tab=panel]")
+        page.wait_for_function(f"{count_editor_loads} > {editor_loads}", timeout=30_000)
+        page.fill("#azimuth_deg", "180")
+        assert "rotate(180)" in page.get_attribute(".panel-map-overlay .rotating", "transform")
+        ### Orientations to compare as rows: "+" adds one, "×" removes one; the config gets the rows.
+        assert page.locator("#compare-rows input").count() == 0
+        for tilt, azimuth in (("30", "90"), ("45", "200")):
+            page.click("#compare-add")
+            page.locator("#compare-rows input").nth(-2).fill(tilt)
+            page.locator("#compare-rows input").nth(-1).fill(azimuth)
+        page.locator("#compare-rows button.remove").first.click()
+        assert page.input_value("#compare") == "45/200"
+        ### Marking obstructions by hand, starting from the sample: on the sky map (always shown at the top of the tab), on a loaded photo and on camera photos.
+        n_sample_obstructed = sum(json.loads(SKY_PATH.read_text())["obstructed"])
+        page.click("#tabs [data-tab=obstruction]")
+        assert page.locator("#sky-map-canvas").is_visible() and page.input_value("#n_sky_nodes") == "500"   ### the setting that gives the sample's grid
+        tap_canvas("sky-map-canvas", 0.52, 0.48)     ### near the zenith, free in the sample; "Mark" is the default mode
+        page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map')", timeout=60_000)
+        assert f": {n_sample_obstructed + 1} of" in page.text_content("#sky-summary")
+        ### Only one source section is open at a time (#40).
+        page.click("#lidar summary")
+        page.click("#photo summary")
+        assert page.evaluate("document.getElementById('photo').open && !document.getElementById('lidar').open")
+        photo_path = tmp_path / "sky.png"
+        pytest.importorskip("matplotlib.pyplot").imsave(photo_path, np.full((300, 400, 3), 0.7))
+        page.set_input_files("#photo-file", photo_path)
+        wait_idle()
+        assert page.input_value("#photo-azimuth_deg") == "180" and page.input_value("#photo-elevation_deg") == "15" and page.locator("#photo-list .photo-item").count() == 1
+        assert page.locator("#photo-canvas").is_visible()
+        ### The patch in the photo's centre may be obstructed or free in the sample: marking and then freeing it changes it at least once; the switch above the photo is the one above the sky map.
+        tap_canvas("photo-canvas", 0.5, 0.5)
+        page.click("#mode-free-photo")
+        assert "selected" in page.get_attribute("#mode-free", "class")
+        tap_canvas("photo-canvas", 0.5, 0.5)
+        page.wait_for_function("document.getElementById('sky-summary').textContent.includes('lidar+sky_map+photo')", timeout=60_000)
+        page.click("#mode-mark")
+        marked_before = page.text_content("#sky-summary")
+        ### Aligning the photo: dragging the sky grid to the right with the right mouse button turns the camera to the left (east of south).
+        page.locator("#photo-canvas").scroll_into_view_if_needed()
+        page.wait_for_timeout(1000)
+        box = page.locator("#photo-canvas").bounding_box()
+        page.mouse.move(box["x"] + 0.5 * box["width"], box["y"] + 0.5 * box["height"])
+        page.mouse.down(button="right")
+        page.mouse.move(box["x"] + 0.7 * box["width"], box["y"] + 0.5 * box["height"], steps=5)
+        page.mouse.up(button="right")
+        page.wait_for_timeout(1000)
+        assert float(page.input_value("#photo-azimuth_deg")) < 175 and page.text_content("#sky-summary") == marked_before
+        ### The sky map shows the photo merged onto the hemisphere: the grey photo's colour south of the zenith, the background in the north.
+        mean_colour = "(x, y) => { const data = document.getElementById('sky-map-canvas').getContext('2d').getImageData(x, y, 10, 10).data; return [0, 1, 2].map(channel => data.filter((_, index) => index % 4 === channel).reduce((sum, value) => sum + value, 0) / 100); }"
+        south, north = page.evaluate(f"({mean_colour})(395, 695)"), page.evaluate(f"({mean_colour})(395, 95)")
+        assert np.abs(np.subtract(south, north)).max() > 20
+        ### Tapping the selected photo's button again hides it.
+        page.click("#photo-list .photo-item >> nth=0 >> button >> nth=0")
+        assert page.locator("#photo-view").is_hidden()
+        page.click("#camera-start")
+        wait_idle()
+        ### The camera stays open for a series of photos, until "Done".
+        for _ in range(2):
+            page.click("#camera-shoot")
+            wait_idle()
+        assert page.locator("#photo-list .photo-item").count() == 3 and page.locator("#camera").is_visible()
+        page.click("#camera-stop")
+        assert page.locator("#camera").is_hidden() and page.locator("#photo-view").is_hidden()
+        photo_set_path = tmp_path / "photo_set.json"
+        photo_set_path.write_bytes(download("#photos-save"))
+        assert len(json.loads(photo_set_path.read_text())["photos"]) == 3
+        ### The trash buttons remove the photos.
+        for remaining in (2, 1, 0):
+            page.click("#photo-list .photo-item >> nth=0 >> button.remove")
+            assert page.locator("#photo-list .photo-item").count() == remaining
+        ### "No obstruction" frees the sky.
+        page.click("#sky-clear")
+        wait_idle()
+        assert "no obstruction" in page.text_content("#sky-summary")
+        ### Obstruction from the LiDAR sample with the sample config's settings (resolution 500 sky nodes, as set from the loaded sample).
+        page.click("#lidar summary")
+        page.fill("#scanner_heading_deg", "188.1")
+        page.set_input_files("#lidar-file", POINT_CLOUD_PATH)
+        page.click("#lidar-compute")
+        wait_idle()
+        assert f"{n_sample_obstructed} of" in page.text_content("#sky-summary")
+        ### Project (#37): with the photo set loaded again, saved with all inputs and the results (computed again, as the inputs changed), then loaded and computed again.
+        page.click("#photo summary")
+        page.set_input_files("#photo-file", photo_set_path)
+        wait_idle()
+        assert page.locator("#photo-list .photo-item").count() == 3
+        page.click("#menu-button")
+        project_path = tmp_path / "project.zip"
+        project_path.write_bytes(download("#project-save"))
+        with zipfile.ZipFile(project_path) as archive:
+            assert {"project.yaml", "config.yaml", "weather.csv", "obstructed_sky.json", "photos.json", "photos/photo_1.jpg", "photos/photo_2.jpg", "point_cloud.csv", "report.pdf", "results/results.json"} <= set(archive.namelist())
+        page.set_input_files("#project-file", project_path)
+        wait_idle()
+        assert page.evaluate("document.body.dataset.state") == "computed" and page.locator("#tab-results").is_visible(), page.text_content("#log")
+        assert page.evaluate("window.pvYieldApp.lastResult.key_figures") == pytest.approx(key_figures, rel=1e-6)
+        assert page.evaluate("document.getElementById('lidar-file').files[0].name") == POINT_CLOUD_PATH.name and "obstructed_sky_2026" in page.text_content("#sky-summary")
+        page.click("#tabs [data-tab=obstruction]")
+        assert page.locator("#photo-list .photo-item").count() == 3
+        ### The inputs are restored after a reload, also the photos (stored a second after the last change).
+        page.wait_for_timeout(2000)
+        page.reload()
+        page.wait_for_function("['ready', 'computed', 'error'].includes(document.body.dataset.state) && !document.getElementById('project-save').disabled", timeout=300_000)
+        assert page.locator("#tab-obstruction").is_visible()                ### the tab is kept in the URL
+        assert "Freiburg-pvgis-tmy.csv" in page.text_content("#weather-summary") and "obstructed_sky_2026" in page.text_content("#sky-summary")
+        assert page.input_value("#scanner_heading_deg") == "188.1"
+        assert page.locator("#photo-list .photo-item").count() == 3
+        ### "No obstruction" removes the obstructed sky description again.
+        page.click("#tabs [data-tab=obstruction]")
+        page.click("#sky-clear")
+        wait_idle()
+        assert "no obstruction" in page.text_content("#sky-summary") and page.is_disabled("#sky-save")
+        ### New project: inputs emptied, the form at its defaults, back on the first tab.
+        page.click("#menu-button")
+        page.click("#project-new")
+        wait_idle()
+        assert page.text_content("#weather-summary") == "not loaded" and page.input_value("#scanner_heading_deg") == "0" and page.locator("#tab-site").is_visible()
+        assert page.evaluate("window.pvYieldApp.lastResult") is None
+        ### Marking on the sky map works after a new project (the session was reset), starting from a free sky.
+        page.click("#tabs [data-tab=obstruction]")
+        tap_canvas("sky-map-canvas", 0.52, 0.48)
+        page.wait_for_function("document.getElementById('sky-summary').textContent.includes(': 1 of')", timeout=60_000)
+        assert page.evaluate("document.body.dataset.state") != "error", page.text_content("#log")
+        ### Camera with both orientation readings, as on Chrome for Android (synthetic events): the gyroscope's (heading from an arbitrary start) and the compass's, 30° apart.
+        ### The shutter waits for a steady compass; the photo gets the compass's heading via the gyroscope; a compass that then disagrees asks for the figure-8 movement and moves the view only slowly.
+        page.evaluate("document.getElementById('photo').open = true")
+        page.click("#camera-start")
+        wait_idle()
+        page.evaluate("""() => {
+            window.compassAlpha = 130;
+            window.sensorTimer = setInterval(() => {
+                window.dispatchEvent(new DeviceOrientationEvent("deviceorientation", { alpha: 100, beta: 80, gamma: 0, absolute: false }));
+                window.dispatchEvent(new DeviceOrientationEvent("deviceorientationabsolute", { alpha: window.compassAlpha, beta: 80, gamma: 0, absolute: true }));
+            }, 50);
+        }""")
+        page.wait_for_timeout(500)
+        assert page.is_disabled("#camera-shoot") and "Hold the phone still" in page.text_content("#camera-note")
+        page.wait_for_function("!document.getElementById('camera-shoot').disabled", timeout=10_000)
+        assert page.locator("#camera-note").is_hidden()
+        page.click("#camera-shoot")
+        wait_idle()
+        page.evaluate("window.compassAlpha = 220")
+        page.wait_for_function("document.getElementById('camera-note').textContent.includes('figure 8')", timeout=10_000)
+        assert page.is_enabled("#camera-shoot")
+        page.click("#camera-shoot")
+        wait_idle()
+        page.evaluate("clearInterval(window.sensorTimer)")
+        page.click("#camera-stop")
+        expected_azimuth = camera_orientation_from_device(130, 80, 0)["azimuth_deg"]
+        page.click("#photo-list .photo-item >> nth=0 >> button >> nth=0")
+        assert float(page.input_value("#photo-azimuth_deg")) == pytest.approx(expected_azimuth, abs=0.1)
+        page.click("#photo-list .photo-item >> nth=1 >> button >> nth=0")
+        assert abs(float(page.input_value("#photo-azimuth_deg")) - expected_azimuth) < 10       ### the wild compass moved the view only a little
+        ### Field of view calibration with the gyroscope: an object on one line, then the phone turned by 50° until it sits on the other line (lines at 80 % of the half image).
+        assert page.input_value("#camera_fov_deg") == "65"                    ### the default without calibration
+        page.click("#fov-calibrate")
+        wait_idle()
+        page.evaluate("""() => {
+            window.gyroscopeAlpha = 100;
+            window.sensorTimer = setInterval(() => window.dispatchEvent(new DeviceOrientationEvent("deviceorientation", { alpha: window.gyroscopeAlpha, beta: 90, gamma: 0, absolute: false })), 50);
+        }""")
+        page.wait_for_function("document.getElementById('camera-note').textContent.includes('one yellow line') && !document.getElementById('camera-shoot').disabled", timeout=10_000)
+        page.click("#camera-shoot")
+        page.evaluate("window.gyroscopeAlpha = 50")
+        page.wait_for_function("document.getElementById('camera-note').textContent.includes('other yellow line')", timeout=10_000)
+        page.wait_for_timeout(300)
+        page.click("#camera-shoot")
+        page.evaluate("clearInterval(window.sensorTimer)")
+        expected_fov = 2 * np.degrees(np.arctan(np.tan(np.radians(25)) / 0.8))
+        assert page.locator("#camera").is_hidden() and float(page.input_value("#camera_fov_deg")) == pytest.approx(expected_fov, abs=0.1)
+        ### Kept in the config, so also in the browser's storage and in a saved project.
+        page.click("#menu-button")
+        assert f"fov_deg: {round(expected_fov, 1)}".encode() in download("#config-save")
+        ### An error shows one line at the top (no traceback); the log has the traceback.
+        bad_sky_path = tmp_path / "not_a_sky.json"
+        bad_sky_path.write_text('{"kind": "something else"}')
+        page.evaluate("document.getElementById('sky-load').open = true")
+        page.set_input_files("#sky-file", bad_sky_path)
+        page.wait_for_function("document.body.dataset.state === 'error'", timeout=60_000)
+        error_text = page.text_content("#error")
+        assert "\n" not in error_text and "Traceback" not in error_text and "details in the log" in error_text and "Traceback" in page.text_content("#log")
     assert key_figures == pytest.approx(expected, rel=1e-6)
+
+
+def test_session_photo_groups_and_interpolation(tmp_path):
+    """Photo groups (#55): each has its own description; with two, the results use the obstruction interpolated at the panel position (#54); a project keeps the groups and their photos."""
+    from pv_yield_estimator.core.sky import SkyDiscretization
+    from synthetic_scene import garage_scene
+    sky, scene = SkyDiscretization.from_node_count(200), garage_scene()
+    texts = {name: json.dumps(scene.obstructed_sky(sky, position).to_dict()) for name, position in {"A": (0.0, 0.0, 0.0), "B": (6.0, 0.0, 0.0)}.items()}
+    session = BrowserSession()
+    session.load_weather(WEATHER_PATH.read_text(encoding="utf-8"), WEATHER_PATH.name, "pvgis_tmy")
+    assert json.loads(session.load_obstructed_sky(texts["A"], "a.json"))["group"] == "A"
+    assert json.loads(session.select_group("B")) is None
+    assert json.loads(session.start_editing(500))["obstructed"] == [0] * sky.n_patches       ### a new group starts free, on the other groups' discretization
+    session.load_obstructed_sky(texts["B"], "b.json")
+    with pytest.raises(ValueError, match="same resolution"):
+        session.load_obstructed_sky(SKY_PATH.read_text(encoding="utf-8"), SKY_PATH.name)
+    groups = [{"name": "A", "offset_m": [0, 0, 0]}, {"name": "B", "offset_m": [6, 0, 0]}]
+    config = lambda panel: {"panel": PANEL, "sky_obstruction": {"groups": groups, "panel_position_m": panel}, "simulation": {"n_sky_nodes": 200}}
+    at = {name: json.loads(session.compute(json.dumps(config(position))))["key_figures"] for name, position in {"A": [0, 0, 0], "middle": [3, 0, 0], "B": [6, 0, 0]}.items()}
+    assert at["A"]["sky_view_factor_horizontal"] == pytest.approx(scene.obstructed_sky(sky, (0, 0, 0)).sky_view_factor())
+    assert at["B"]["sky_view_factor_horizontal"] == pytest.approx(scene.obstructed_sky(sky, (6, 0, 0)).sky_view_factor())
+    assert at["A"]["sky_view_factor_horizontal"] < at["middle"]["sky_view_factor_horizontal"] < at["B"]["sky_view_factor_horizontal"]
+    preview = json.loads(session.panel_sky(json.dumps(config([3, 0, 0]))))
+    assert preview["source_group"] == "A" and len(preview["obstructed"]) == sky.n_patches and any(region["distance_m"] for region in preview["regions"])
+    assert json.loads(session.panel_sky(json.dumps(config([3, 0, 0]) | {"sky_obstruction": {}}))) is not None       ### B without a position sits at A's
+    ### Project: both groups' descriptions and the photos with their groups; loading gives them back.
+    photo_path = tmp_path / "photo.jpg"
+    photo_path.write_bytes(b"\xff\xd8 not really a JPEG")
+    view = {"azimuth_deg": 180.0, "elevation_deg": 20.0, "roll_deg": 0.0, "fov_deg": 65.0, "width": 400, "height": 300}
+    project = {"config": config([3, 0, 0]), "groups": [{"name": "A", "obstructed_sky": {"text": texts["A"], "filename": "a.json"}}, {"name": "B", "obstructed_sky": {"text": texts["B"], "filename": "b.json"}}, {"name": "C", "obstructed_sky": None}],
+               "photos": [{"name": "Photo 1", "taken": "2026-10-12T10:00:00Z", "view": view, "group": "B", "path": str(photo_path)}]}
+    project_path = session.save_project(json.dumps(project), str(tmp_path / "groups.zip"))
+    with zipfile.ZipFile(project_path) as archive:
+        assert {"obstructed_sky.json", "obstructed_sky_B.json", "photos.json"} <= set(archive.namelist()) and json.loads(archive.read("photos.json"))["format_version"] == 2
+    loaded = json.loads(BrowserSession().load_project(project_path, str(tmp_path / "files")))
+    assert [(group["name"], (group["obstructed_sky"] or {}).get("filename")) for group in loaded["groups"]] == [("A", "a.json"), ("B", "b.json"), ("C", None)]
+    assert loaded["groups"][1]["obstructed_sky"]["text"] == texts["B"] and loaded["obstructed_sky"]["text"] == texts["A"] and loaded["photos"][0]["group"] == "B"
+    assert loaded["config"]["sky_obstruction"]["groups"] == groups
+    ### Deleting a group: its description is gone; group A is emptied instead of deleted.
+    session.delete_group("B")
+    assert list(session.group_skies) == ["A"] and session.active_group == "A"
+    session.delete_group("A")
+    assert session.group_skies == {"A": None}
+
+
+def test_session_older_project_loads_as_group_a(tmp_path):
+    """A project from before the photo groups (photo set version 1, one obstructed sky description) loads as group A."""
+    from pv_yield_estimator.project import write_project_zip
+    view = {"azimuth_deg": 180.0, "elevation_deg": 20.0, "roll_deg": 0.0, "fov_deg": 65.0, "width": 400, "height": 300}
+    photos = {"format_version": 1, "kind": "photo_set", "photos": [{"name": "Photo 1", "taken": "2026-10-09T10:00:00Z", "view": view, "image_file": "photos/photo_1.jpg"}]}
+    path = tmp_path / "old.zip"
+    write_project_zip(path, {"config.yaml": "format_version: 1\n", "obstructed_sky.json": SKY_PATH.read_text(encoding="utf-8"), "photos.json": json.dumps(photos), "photos/photo_1.jpg": b"\xff\xd8"},
+                      obstructed_sky={"file": "obstructed_sky.json", "original_filename": "sample.json"})
+    loaded = json.loads(BrowserSession().load_project(str(path), str(tmp_path / "files")))
+    assert [group["name"] for group in loaded["groups"]] == ["A"] and loaded["groups"][0]["obstructed_sky"]["filename"] == "sample.json" and loaded["photos"][0]["group"] == "A"
+
+
+@BROWSER_TEST
+def test_browser_photo_groups(tmp_path):
+    """Photo groups (#55) in the page: two groups with synthetic sky maps, a photo added to group A after group B exists and one deleted, the positions set (fields and dragging the panel
+    on the map), the obstruction at the panel shown and used for the results (as computed natively), kept in a project and after a reload."""
+    from pv_yield_estimator.core.position_interpolation import obstructed_sky_for_panel
+    from pv_yield_estimator.core.sky import ObstructedSky, SkyDiscretization
+    from synthetic_scene import garage_scene
+    sky, scene = SkyDiscretization.from_node_count(200), garage_scene()
+    skies = {name: scene.obstructed_sky(sky, position) for name, position in {"A": (0.0, 0.0, 0.0), "B": (6.0, 0.0, 0.0)}.items()}
+    for name, obstructed_sky in skies.items():
+        (tmp_path / f"group_{name}.json").write_text(json.dumps(obstructed_sky.to_dict()))
+    with app_page(tmp_path) as app:
+        page, wait_idle, download = app.page, app.wait_idle, app.download
+        group_photos = lambda name: page.locator(f"#photo-list .photo-group[data-group={name}] .photo-item").count()
+        page.set_input_files("#weather-file", WEATHER_PATH)
+        wait_idle()
+        page.click("#tabs [data-tab=obstruction]")
+        assert page.locator("#group-tabs").is_hidden()                             ### a single group: as before
+        page.evaluate("document.getElementById('sky-load').open = true")
+        page.set_input_files("#sky-file", tmp_path / "group_A.json")
+        wait_idle()
+        ### A new group opens the camera right away; its sky map starts free.
+        page.evaluate("document.getElementById('photo').open = true")
+        page.click("#group-new")
+        wait_idle()
+        assert page.locator("#camera").is_visible()
+        page.click("#camera-stop")
+        assert page.locator("#group-tabs button").all_text_contents() == ["A", "B"] and page.get_attribute("#group-tabs button.selected", "aria-label") == "Show group B"
+        assert "Group B: none" in page.text_content("#sky-summary")
+        page.set_input_files("#sky-file", tmp_path / "group_B.json")
+        wait_idle()
+        assert "Group B: group_B.json" in page.text_content("#sky-summary")
+        ### Group A continued after B exists (camera without sensors: a default orientation), then a photo of B; A's photo deleted again.
+        page.click("#photo-list .photo-group[data-group=A] .add-photos")
+        wait_idle()
+        page.click("#camera-shoot")
+        wait_idle()
+        page.click("#camera-stop")
+        assert group_photos("A") == 1 and group_photos("B") == 0 and page.get_attribute("#group-tabs button.selected", "aria-label") == "Show group A"
+        assert "Group A: group_A.json" in page.text_content("#sky-summary")
+        page.click("#group-tabs button >> text=B")
+        wait_idle()
+        page.click("#camera-start")
+        wait_idle()
+        page.click("#camera-shoot")
+        wait_idle()
+        page.click("#camera-stop")
+        assert group_photos("A") == 1 and group_photos("B") == 1
+        page.click("#photo-list .photo-group[data-group=A] .photo-item button.remove")
+        assert group_photos("A") == 0 and group_photos("B") == 1
+        ### Positions: B 6 m east of A (typed), the panel dragged on the map; the obstruction at the panel is shown.
+        page.click("#tabs [data-tab=panel]")
+        page.wait_for_selector("#panel-map.leaflet-container", timeout=60_000)
+        assert page.locator(".group-marker").count() == 2
+        for selector, value in [('[data-position="Group B-0"]', "6"), ('[data-position="Panel-0"]', "1")]:
+            page.fill(selector, value)
+            page.dispatch_event(selector, "change")
+        page.wait_for_function("!document.getElementById('panel-sky').hidden", timeout=60_000)
+        assert "A–B 6.0 m" in page.text_content("#group-distances") and "moved from group A" in page.text_content("#panel-sky-summary")
+        page.locator(".panel-map-overlay .panel-target").scroll_into_view_if_needed()
+        box = page.locator(".panel-map-overlay .panel-target").bounding_box()
+        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        page.mouse.move(x, y)
+        page.mouse.down()
+        for step in range(1, 6):
+            page.mouse.move(x + 8 * step, y)
+        page.mouse.up()
+        page.wait_for_function("Number(document.querySelector('[data-position=\"Panel-0\"]').value) > 1.5", timeout=10_000)
+        panel_position = [float(page.input_value(f'[data-position="Panel-{index}"]')) for index in range(3)]
+        assert page.input_value('[data-position="Panel-1"]') != "" and abs(panel_position[1]) < 0.5
+        ### The results use the obstruction interpolated at the panel position, as computed natively.
+        page.click("#tabs [data-tab=results]")
+        wait_idle()
+        groups = [{"name": "A", "offset_m": [0, 0, 0]}, {"name": "B", "offset_m": [6, 0, 0]}]
+        expected = obstructed_sky_for_panel({name: ObstructedSky.from_dict(json.loads((tmp_path / f"group_{name}.json").read_text())) for name in skies}, groups=groups, panel_position_m=panel_position)
+        assert page.evaluate("window.pvYieldApp.lastResult.key_figures.sky_view_factor_horizontal") == pytest.approx(expected.sky_view_factor(), abs=1e-9)
+        ### The project holds both groups and the positions; a reload restores them.
+        page.click("#menu-button")
+        with zipfile.ZipFile(io.BytesIO(download("#project-save"))) as archive:
+            assert {"obstructed_sky.json", "obstructed_sky_B.json", "photos/photo_1.jpg"} <= set(archive.namelist())
+            assert "name: B" in archive.read("config.yaml").decode() and json.loads(archive.read("photos.json"))["photos"][0]["group"] == "B"
+        page.reload()
+        page.wait_for_function("['ready', 'computed', 'error'].includes(document.body.dataset.state) && document.getElementById('group-tabs').children.length === 2", timeout=300_000)
+        wait_idle()
+        page.click("#tabs [data-tab=panel]")
+        assert page.input_value('[data-position="Group B-0"]') == "6" and float(page.input_value('[data-position="Panel-0"]')) == pytest.approx(panel_position[0])
+        page.click("#tabs [data-tab=obstruction]")
+        assert group_photos("B") == 1 and page.locator("#group-tabs button").all_text_contents() == ["A", "B"]

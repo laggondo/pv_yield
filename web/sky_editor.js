@@ -10,10 +10,15 @@
 // The camera geometry (sensor angles to camera orientation, projection of the sky nodes to pixels) is computed in
 // Python (core/photo.py); this module only draws and handles input. Photos are assumed to be taken from the panel
 // position: no offset is applied (#11).
+// Photo groups (#55): every photo belongs to a group (A, B, ...; one camera position each), and each group has its
+// own sky map (the obstructed sky description of the group in Python). The views show the active group's photos and
+// flags; the photo list shows all groups with their photos. Switching groups is up to the page (`onSelectGroup`),
+// which then calls `setActiveGroup` and `reload`.
 
 import { HeadingFusion, MARKER_FRACTION, cameraForward, fieldOfViewFromTurn } from "./heading.js";
 
-const PHOTO_SET_FORMAT_VERSION = 1;
+const PHOTO_SET_FORMAT_VERSION = 2;  // version 2: each photo has its group; photos of version 1 belong to group A
+const FIRST_GROUP = "A";
 const MAX_PHOTO_PX = 1600;           // longer side of stored photos, to keep memory and saved files small
 const SKY_MAP_PX = 800;
 const SKY_MAP_RADIUS = SKY_MAP_PX / 2 - 40;   // radius of the horizon in the sky map; the compass letters sit outside it
@@ -35,14 +40,17 @@ const SKY_MAP_REDRAW_DELAY_MS = 250;  // the merged photos are recomputed this l
 // Create the editor on the page's elements; `call` runs a worker action, `report` logs, `onApplied(summary)` is called
 // after the marked flags were sent to Python as the new obstructed sky description, `onPhotosChanged()` a moment after
 // photos were added, removed or aligned (to store them for the next visit), `onFovCalibrated(fovDeg)` after the camera's
-// field of view was calibrated. Marking starts with `reload()`.
-export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyNodes, site, onApplied, onPhotosChanged, onFovCalibrated }) {
+// field of view was calibrated. Photo groups: `groups()` gives the groups' names in order, `onSelectGroup(name)` makes
+// a group the active one, `onAddPhotos(name)` opens the camera for a group (called in the tap's handler),
+// `onDeleteGroup(name)` deletes one, `onGroupsNeeded(names)` creates groups for loaded photos. Marking starts with `reload()`.
+export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyNodes, site, onApplied, onPhotosChanged, onFovCalibrated, groups, onSelectGroup, onAddPhotos, onDeleteGroup, onGroupsNeeded }) {
   let sky = null;                      // {nodes, triangles}; null until the first reload
   let flags = null;                    // Uint8Array, one entry per patch
   let skyMapPixels = null;             // node positions in the sky map
   let sunPaths = [];                   // [{label, color, directions}] for the site; empty if the site is unknown
   const skyMapView = { kind: "sky_map", name: "Sky map" };
-  const photos = [];                   // [{kind: "photo", name, taken, image, view, projection}]
+  const photos = [];                   // [{kind: "photo", name, taken, group, image, view, projection}]
+  let activeGroup = FIRST_GROUP;       // the group whose sky map and photos the views show
   let selected = null;                 // the photo shown for marking, or null
   const methodsUsed = new Set();
   let skyMapPhotos = null;             // canvas with the photos merged onto the sky map; null: to be recomputed
@@ -85,10 +93,13 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
 
   // ---- Coverage and the photos merged onto the sky map ----
 
-  // Flag per patch: 1 if a photo shows it completely (all corners in front of the camera and inside the image).
+  // The active group's photos.
+  const groupPhotos = () => photos.filter(photo => photo.group === activeGroup);
+
+  // Flag per patch: 1 if a photo of the active group shows it completely (all corners in front of the camera and inside the image).
   function coveredPatches() {
     const covered = new Uint8Array(sky.triangles.length);
-    for (const photo of photos) {
+    for (const photo of groupPhotos()) {
       if (!photo.projection) continue;
       const { pixels, in_front } = photo.projection, { width, height } = photo.view;
       const inside = node => in_front[node] && pixels[node][0] >= 0 && pixels[node][0] <= width && pixels[node][1] >= 0 && pixels[node][1] <= height;
@@ -116,7 +127,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   // outside all photos keep the background colour. The camera axes come from Python (projectSky).
   function mergedSkyMapCanvas() {
     const image = new ImageData(SKY_MAP_PX, SKY_MAP_PX);
-    const sources = photos.filter(photo => photo.projection).map(photo => {
+    const sources = groupPhotos().filter(photo => photo.projection).map(photo => {
       photo.pixelData ??= photo.image.getContext("2d").getImageData(0, 0, photo.image.width, photo.image.height).data;
       return { ...photo.projection.camera, width: photo.image.width, height: photo.image.height, data: photo.pixelData };
     });
@@ -237,7 +248,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     context.fillStyle = `rgb(${SKY_MAP_BACKGROUND.join(", ")})`;
     context.fillRect(0, 0, SKY_MAP_PX, SKY_MAP_PX);
     context.setTransform(skyMapZoom.factor, 0, 0, skyMapZoom.factor, skyMapZoom.x, skyMapZoom.y);
-    if (element("sky-map-photos").checked && photos.some(photo => photo.projection)) {
+    if (element("sky-map-photos").checked && groupPhotos().some(photo => photo.projection)) {
       skyMapPhotos ??= mergedSkyMapCanvas();
       context.drawImage(skyMapPhotos, 0, 0);
     }
@@ -272,22 +283,46 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
 
   // ---- Photo list and photo settings ----
 
-  // The photos as buttons, each with a trash button to remove it; the selected one is shown below the list.
+  // The photo groups, each with its photos as buttons (each with a trash button to remove it); the selected photo is
+  // shown below the list. A group's title selects it (the active one is highlighted), "Add photos" opens the camera for
+  // it, the trash button deletes the group with its photos (not group A, the reference position).
   function showPhotoList() {
     const list = element("photo-list");
     list.innerHTML = "";
-    for (const photo of photos) {
-      const item = Object.assign(document.createElement("span"), { className: "photo-item" });
-      const button = Object.assign(document.createElement("button"), { textContent: photo.name, className: photo === selected ? "small selected" : "small" });
-      button.addEventListener("click", () => select(photo === selected ? null : photo));
-      const remove = Object.assign(document.createElement("button"), { textContent: "🗑", className: "small remove", title: `Remove ${photo.name}` });
-      remove.setAttribute("aria-label", `Remove ${photo.name}`);
-      remove.addEventListener("click", () => removePhoto(photo));
-      item.append(button, remove);
-      list.appendChild(item);
+    const button = (text, className, onClick, label) => {
+      const result = Object.assign(document.createElement("button"), { textContent: text, className });
+      if (label) result.setAttribute("aria-label", label);
+      result.addEventListener("click", onClick);
+      return result;
+    };
+    for (const name of groups()) {
+      const members = photos.filter(photo => photo.group === name);
+      const group = Object.assign(document.createElement("div"), { className: name === activeGroup ? "photo-group active" : "photo-group" });
+      group.dataset.group = name;
+      const header = Object.assign(document.createElement("div"), { className: "photo-group-header" });
+      header.append(button(`Group ${name} (${members.length} photo${members.length === 1 ? "" : "s"})`, name === activeGroup ? "small selected group-title" : "small group-title", () => onSelectGroup(name)),
+        button("Add photos", "small add-photos", () => onAddPhotos(name), `Add photos to group ${name}`));
+      if (name !== FIRST_GROUP) header.append(button("🗑", "small remove", () => onDeleteGroup(name), `Delete group ${name}`));
+      group.append(header);
+      const items = Object.assign(document.createElement("div"), { className: "buttons photo-items" });
+      for (const photo of members) {
+        const item = Object.assign(document.createElement("span"), { className: "photo-item" });
+        item.append(button(photo.name, photo === selected ? "small selected" : "small", () => selectPhoto(photo).catch(fail)),
+          button("🗑", "small remove", () => removePhoto(photo), `Remove ${photo.name}`));
+        items.appendChild(item);
+      }
+      group.append(items);
+      list.appendChild(group);
     }
     element("photo-view").hidden = !selected;
     showPhotoSettings();
+  }
+
+  // Show a photo for marking, or hide it if it is shown; a photo of another group makes that group the active one first.
+  async function selectPhoto(photo) {
+    if (photo === selected) return select(null);
+    if (photo.group !== activeGroup) await onSelectGroup(photo.group);
+    select(photo);
   }
 
   function showPhotoSettings() {
@@ -339,18 +374,18 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   }
 
   // A photo: the image as canvas (at most MAX_PHOTO_PX) with its camera view; projected when marking starts.
-  function makePhoto(image, view, name, taken) {
+  function makePhoto(image, view, name, taken, group = FIRST_GROUP) {
     const scale = Math.min(1, MAX_PHOTO_PX / Math.max(image.width, image.height));
     const photoCanvas = document.createElement("canvas");
     photoCanvas.width = Math.round(image.width * scale);
     photoCanvas.height = Math.round(image.height * scale);
     photoCanvas.getContext("2d").drawImage(image, 0, 0, photoCanvas.width, photoCanvas.height);
-    return { kind: "photo", name, taken, image: photoCanvas, view: { ...view, width: photoCanvas.width, height: photoCanvas.height } };
+    return { kind: "photo", name, taken, group, image: photoCanvas, view: { ...view, width: photoCanvas.width, height: photoCanvas.height } };
   }
 
-  // Add a photo with its camera view; shown for marking unless `selectPhoto` is false (photos taken in a series).
-  async function addPhoto(image, view, name, taken, selectPhoto = true) {
-    const photo = makePhoto(image, view, name, taken);
+  // Add a photo with its camera view to the active group; shown for marking unless `selectPhoto` is false (photos taken in a series).
+  async function addPhoto(image, view, name, taken, selectPhoto = true, group = activeGroup) {
+    const photo = makePhoto(image, view, name, taken, group);
     photos.push(photo);
     if (selectPhoto) select(photo);
     else showPhotoList();
@@ -368,9 +403,9 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     report(`Removed ${photo.name}`);
   }
 
-  // Send the flags to Python as the new obstructed sky description, with the contributing methods and the photos' views.
+  // Send the flags to Python as the new obstructed sky description of the active group, with the contributing methods and its photos' views.
   async function apply() {
-    const details = photos.map(photo => ({ name: photo.name, taken: photo.taken, ...photo.view }));
+    const details = groupPhotos().map(photo => ({ name: photo.name, taken: photo.taken, ...photo.view }));
     const summary = await call("applyEdits", Array.from(flags), [...methodsUsed], { photos: details });
     await onApplied(summary);
   }
@@ -636,7 +671,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       const covered = coveredPatches();
       drawPatches(overlayContext, patchCorners({ kind: "photo", projection: camera.projection }), displayScale(overlay), { markers: camera.projection.markers, horizon: camera.projection.horizon, sunPaths: camera.projection.sun_paths, filled: covered, fillStyle: COVERED_FILL });
       const { azimuth_deg, elevation_deg, roll_deg } = camera.projection.view;
-      element("camera-status").textContent = `${camera.photosTaken} photo${camera.photosTaken === 1 ? "" : "s"} taken; camera: azimuth ${azimuth_deg.toFixed(0)}°, elevation ${elevation_deg.toFixed(0)}°, roll ${roll_deg.toFixed(0)}°; blue: covered by earlier photos (${percentCovered(covered)} of the sky)`
+      element("camera-status").textContent = `Group ${activeGroup}: ${camera.photosTaken} photo${camera.photosTaken === 1 ? "" : "s"} taken; camera: azimuth ${azimuth_deg.toFixed(0)}°, elevation ${elevation_deg.toFixed(0)}°, roll ${roll_deg.toFixed(0)}°; blue: covered by earlier photos (${percentCovered(covered)} of the sky)`
         + (orientation.absolute ? "" : "; no compass: correct the azimuth after taking the photo");
     }
     requestAnimationFrame(liveOverlay);
@@ -814,7 +849,7 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
     const taken = new Date().toISOString();
     flash();
     camera.photosTaken += 1;
-    await addPhoto(frame, view, `Photo ${photos.length + 1}`, taken, false);
+    await addPhoto(frame, view, `${activeGroup}${groupPhotos().length + 1}`, taken, false);
   }
 
   // ---- Files: photos and photo sets ----
@@ -834,7 +869,13 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
       const data = JSON.parse(await file.text());
       if (data.kind !== "photo_set") throw new Error(`${file.name} is not a photo set saved from this page (kind ${JSON.stringify(data.kind)})`);
       if (data.format_version > PHOTO_SET_FORMAT_VERSION) throw new Error(`${file.name} has photo set format version ${data.format_version}; this page reads up to ${PHOTO_SET_FORMAT_VERSION}`);
-      for (const photo of data.photos) await addPhoto(await loadImage(photo.image), photo.view, photo.name, photo.taken);
+      // Version 1 has no groups: its photos go to group A.
+      const groupOf = photo => String(photo.group ?? FIRST_GROUP);
+      await onGroupsNeeded([...new Set(data.photos.map(groupOf))]);
+      for (const photo of data.photos) await addPhoto(await loadImage(photo.image), photo.view, photo.name, photo.taken, false, groupOf(photo));
+      showPhotoList();
+      skyMapPhotos = null;
+      drawSkyMap();
       report(`Loaded ${data.photos.length} photos from ${file.name}`);
       return;
     }
@@ -848,23 +889,23 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   }
 
   function photoSetText() {
-    const entries = photos.map(photo => ({ name: photo.name, taken: photo.taken, view: photo.view, image: photo.image.toDataURL("image/jpeg", 0.85) }));
+    const entries = photos.map(photo => ({ name: photo.name, taken: photo.taken, group: photo.group, view: photo.view, image: photo.image.toDataURL("image/jpeg", 0.85) }));
     return JSON.stringify({ format_version: PHOTO_SET_FORMAT_VERSION, kind: "photo_set", photos: entries });
   }
 
   // The photos as JPEG bytes with their camera views, for a project (#37).
   async function photoFiles() {
     const toJpeg = canvas => new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Could not encode a photo as JPEG")), "image/jpeg", 0.85));
-    return Promise.all(photos.map(async photo => ({ name: photo.name, taken: photo.taken, view: photo.view, bytes: new Uint8Array(await (await toJpeg(photo.image)).arrayBuffer()) })));
+    return Promise.all(photos.map(async photo => ({ name: photo.name, taken: photo.taken, group: photo.group, view: photo.view, bytes: new Uint8Array(await (await toJpeg(photo.image)).arrayBuffer()) })));
   }
 
-  // Replace all photos, e.g. by those of a loaded project ([{name, taken, view, bytes}] with JPEG bytes).
+  // Replace all photos, e.g. by those of a loaded project ([{name, taken, view, group, bytes}] with JPEG bytes; without a group: group A).
   async function setPhotos(newPhotos) {
     const loaded = [];
-    for (const { name, taken, view, bytes } of newPhotos) {
+    for (const { name, taken, view, group, bytes } of newPhotos) {
       const url = URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
       try {
-        loaded.push(makePhoto(await loadImage(url), view, name, taken));
+        loaded.push(makePhoto(await loadImage(url), view, name, taken, group ?? FIRST_GROUP));
       } finally {
         URL.revokeObjectURL(url);
       }
@@ -904,9 +945,48 @@ export function createSkyEditor({ element, call, report, fail, defaultFov, nSkyN
   for (const key of ["azimuth_deg", "elevation_deg", "roll_deg", "fov_deg"]) element(`photo-${key}`).addEventListener("input", photoSettingChanged);
   element("sky-map-photos").addEventListener("change", drawSkyMap);
 
+  // ---- Photo groups ----
+
+  // Show another group's sky map and photos (the page has made it the active one in Python; `reload` follows).
+  function setActiveGroup(name) {
+    activeGroup = name;
+    if (selected && selected.group !== name) selected = null;
+    skyMapPhotos = null;
+    showPhotoList();
+  }
+
+  // Remove a group's photos (when the group is deleted).
+  function removeGroupPhotos(name) {
+    photos.splice(0, photos.length, ...photos.filter(photo => photo.group !== name));
+    if (selected?.group === name) selected = null;
+    skyMapPhotos = null;
+    showPhotoList();
+    drawSkyMap();
+    photosChanged();
+  }
+
+  // A read-only sky map with the given flags (e.g. the obstruction interpolated at the panel position) on another
+  // canvas, with text labels at directions ([{label, direction}]); no photos, no zoom.
+  function drawPreview(canvas, previewFlags, labels = []) {
+    if (!sky) return;
+    const context = canvas.getContext("2d");
+    canvas.width = canvas.height = SKY_MAP_PX;
+    context.fillStyle = `rgb(${SKY_MAP_BACKGROUND.join(", ")})`;
+    context.fillRect(0, 0, SKY_MAP_PX, SKY_MAP_PX);
+    const compass = COMPASS.map(([label, azimuth]) => {
+      const radius = SKY_MAP_RADIUS + 20;
+      return { label, x: SKY_MAP_PX / 2 + radius * Math.sin(azimuth * Math.PI / 180), y: SKY_MAP_PX / 2 - radius * Math.cos(azimuth * Math.PI / 180) };
+    });
+    const markers = [...compass, ...labels.map(({ label, direction }) => { const [x, y] = skyMapPosition(direction); return { label, x, y }; })];
+    const previewSunPaths = sunPaths.map(({ color, directions }) => ({ color, pieces: [directions.map(skyMapPosition)] }));
+    drawPatches(context, patchCorners(skyMapView), displayScale(canvas), { markers, sunPaths: previewSunPaths, filled: previewFlags });
+  }
+
   return {
-    reload, redraw: draw, startCamera, startCalibration, stopCamera, takePhoto, loadPhotoFile, photoSetText, photoFiles, setPhotos,
+    reload, redraw: draw, startCamera, startCalibration, stopCamera, takePhoto, loadPhotoFile, photoSetText, photoFiles, setPhotos, setActiveGroup, removeGroupPhotos, drawPreview, showPhotoList,
     get isStarted() { return sky !== null; },
     get hasPhotos() { return photos.length > 0; },
+    get activeGroup() { return activeGroup; },
+    groupPhotoCount: name => photos.filter(photo => photo.group === name).length,
   };
 }
