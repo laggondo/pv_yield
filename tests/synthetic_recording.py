@@ -60,8 +60,8 @@ def synthetic_recording(heading_offset_deg=30.0, n_frames=12, fov_deg=60.0, widt
     return recording_from_views(views, positions, heading_offset_deg, compass), images, views
 
 
-def recording_from_views(views, positions_earth, heading_offset_deg=30.0, compass="frames"):
-    """A recording dict with frames at the given camera views (earth coordinates) and positions (east, north, up in metres from the reference position), with poses in AR coordinates for the heading offset.
+def recording_from_views(views, positions_earth, heading_offset_deg=30.0, compass="frames", time_step_s=0.4):
+    """A recording dict with frames at the given camera views (earth coordinates) and positions (east, north, up in metres from the reference position), `time_step_s` apart, with poses in AR coordinates for the heading offset.
 
     `compass` as in `synthetic_recording`.
     """
@@ -73,9 +73,9 @@ def recording_from_views(views, positions_earth, heading_offset_deg=30.0, compas
         earth_rotation = np.stack([view.right, view.up, -view.forward], axis=1)
         ar_rotation = to_earth.T @ earth_rotation
         alpha, beta, gamma = Rotation.from_matrix(earth_rotation).as_euler("ZXY", degrees=True)
-        frame = {"file": frame_file_name(index + 1), "time_s": 0.5 + 0.4 * index, "position_m": (to_earth.T @ np.asarray(position_earth, dtype=float)).tolist(), "orientation_xyzw": Rotation.from_matrix(ar_rotation).as_quat().tolist(),
+        frame = {"file": frame_file_name(index + 1), "time_s": 0.5 + time_step_s * index, "position_m": (to_earth.T @ np.asarray(position_earth, dtype=float)).tolist(), "orientation_xyzw": Rotation.from_matrix(ar_rotation).as_quat().tolist(),
                  "emulated_position": False, "width": width, "height": height, "projection_matrix": projection_matrix(view.fov_deg, width, height), "screen_angle_deg": 0,
-                 "compass": {"alpha_deg": alpha, "beta_deg": beta, "gamma_deg": gamma, "time_s": 0.5 + 0.4 * index - 0.05} if compass == "frames" else None}
+                 "compass": {"alpha_deg": alpha, "beta_deg": beta, "gamma_deg": gamma, "time_s": 0.5 + time_step_s * index - 0.05} if compass == "frames" else None}
         frames.append(frame)
     width, height = (int(views[0].width), int(views[0].height)) if views else (0, 0)
     details = {"created": "2026-10-10T12:00:00Z", "user_agent": "synthetic", "reference_note": "synthetic reference", "gps": {"latitude": 47.996, "longitude": 7.849, "altitude_m": 280.0, "accuracy_m": 5.0},
@@ -159,4 +159,5 @@ def room_recording(heading_offset_deg=30.0, n_frames=30, fov_deg=60.0, width=320
         views.append(CameraView(azimuth_deg=(330 + 300 * fraction) % 360, elevation_deg=-10 + 50 * fraction, roll_deg=8 * np.sin(5 * fraction), fov_deg=fov_deg, width=width, height=height))
         positions.append([2.0 * along, 0.2 * np.sin(4 * fraction), 0.4 * back] if moving else jitter[index])
     images = [room.render(view, position) for view, position in zip(views, positions)]
-    return recording_from_views(views, positions, heading_offset_deg), images, room
+    ### Frames timed so that the camera turns by 10°/s, slow enough not to blur.
+    return recording_from_views(views, positions, heading_offset_deg, time_step_s=300 / max(n_frames - 1, 1) / 10), images, room

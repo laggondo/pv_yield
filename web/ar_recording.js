@@ -13,7 +13,12 @@ const RECORDING_FORMAT_VERSION = 1;
 const MAX_FRAMES = 300;
 const MIN_MOVE_M = 0.05;             // a new keyframe when the camera moved more than this ...
 const MIN_TURN_DEG = 5;              // ... or turned more than this since the last one,
-const MIN_INTERVAL_S = 0.25;         // but at most 4 per second
+const MIN_INTERVAL_S = 0.25;         // but at most 4 per second,
+// and only while the phone moves slowly: faster turning or moving blurs the image (#48: frames taken while turning at
+// 25–80°/s had no usable features). Speeds are smoothed over about SPEED_SMOOTHING_S.
+const MAX_TURN_RATE_DEG_S = 15;
+const MAX_SPEED_M_S = 0.5;
+const SPEED_SMOOTHING_S = 0.1;
 const JPEG_QUALITY = 0.85;
 const STATUS_INTERVAL_MS = 200;
 const COMPASS_AFTER_WAIT_MS = 2000;  // after the session, wait this long for a compass reading
@@ -157,8 +162,28 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
     return { ...angles, time_s: relativeTime(time) };
   }
 
+  // Smoothed turn rate (°/s) and speed (m/s) of the camera from the previous XR frame's pose.
+  function updateMotion(transform, time) {
+    const previous = active.previousPose;
+    active.previousPose = { position: { ...transform.position }, orientation: { x: transform.orientation.x, y: transform.orientation.y, z: transform.orientation.z, w: transform.orientation.w }, time };
+    if (!previous || time <= previous.time) return;
+    const dt = (time - previous.time) / 1000;
+    const p = transform.position, q = previous.position;
+    const weight = Math.min(1, dt / SPEED_SMOOTHING_S);
+    active.turnRate += weight * (turnDeg(transform.orientation, previous.orientation) / dt - active.turnRate);
+    active.speed += weight * (Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) / dt - active.speed);
+  }
+
+  function tooFast() {
+    return active.turnRate > MAX_TURN_RATE_DEG_S || active.speed > MAX_SPEED_M_S;
+  }
+
   function isKeyframe(transform, time) {
     const last = active.lastKept;
+    if (tooFast()) {
+      active.framesTooFast++;
+      return false;
+    }
     if (!last) return true;
     if ((time - last.time) / 1000 < MIN_INTERVAL_S) return false;
     const { position: p, orientation } = transform;
@@ -174,7 +199,8 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
     active.readbackMs.push(performance.now() - start);
     const { position: p, orientation: q } = view.transform;
     active.frames.push({ file: frameFileName(active.frames.length + 1), time_s: relativeTime(time), position_m: [p.x, p.y, p.z], orientation_xyzw: [q.x, q.y, q.z, q.w], emulated_position: emulatedPosition,
-      width, height, projection_matrix: Array.from(view.projectionMatrix), screen_angle_deg: screenAngle(), compass: compassEntry(active.compass) });
+      width, height, projection_matrix: Array.from(view.projectionMatrix), screen_angle_deg: screenAngle(), compass: compassEntry(active.compass),
+      turn_rate_deg_s: Math.round(10 * active.turnRate) / 10, speed_m_s: Math.round(1000 * active.speed) / 1000 });
     const encodeStart = performance.now();
     active.blobs.push(encodeJpeg(pixels, width, height).then(blob => {
       active.encodeMs.push(performance.now() - encodeStart);
@@ -196,8 +222,11 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
   function showRecordingStatus(time, baseline, trackingLost) {
     if (time - active.lastStatus < STATUS_INTERVAL_MS) return;
     active.lastStatus = time;
+    const fast = trackingLost === false && tooFast();
     element("ar-status").textContent = `${active.frames.length} frames · moved ${format(baseline, 2)} m · tracking ${trackingLost === null ? "starting" : trackingLost ? "LOST" : "ok"}`
+      + (fast ? ` · TOO FAST (${active.turnRate > MAX_TURN_RATE_DEG_S ? `turning ${Math.round(active.turnRate)}°/s` : `moving ${format(active.speed, 2)} m/s`}): slow down` : "")
       + (active.frames.length >= MAX_FRAMES ? ` · limit of ${MAX_FRAMES} frames reached: stop now` : "");
+    element("ar-status").classList.toggle("warning", fast);
   }
 
   function onXrFrame(time, frame) {
@@ -213,6 +242,7 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
     if (!pose) return showRecordingStatus(time, 0, null);
     const view = pose.views[0];
     const baseline = extendPath(view.transform.position);
+    if (!pose.emulatedPosition) updateMotion(view.transform, time);
     if (pose.emulatedPosition) active.trackingLostFrames++;
     if (!view.camera) active.framesWithoutCamera++;
     else if (active.frames.length < MAX_FRAMES && isKeyframe(view.transform, time)) keepFrame(view, time, pose.emulatedPosition);
@@ -223,7 +253,8 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
   async function start() {
     const overlay = element("ar-overlay");
     active = { started: false, ended: false, compass: null, compassBefore: null, compassAfter: null, compassEvents: 0, orientationEvents: 0, frames: [], blobs: [], lastKept: null, xrFrames: 0,
-      framesWithoutCamera: 0, trackingLostFrames: 0, readbackMs: [], encodeMs: [], lastStatus: 0, box: { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } }, contextLost: false };
+      framesWithoutCamera: 0, trackingLostFrames: 0, readbackMs: [], encodeMs: [], lastStatus: 0, box: { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } }, contextLost: false,
+      previousPose: null, turnRate: 0, speed: 0, framesTooFast: 0 };
     window.addEventListener("deviceorientationabsolute", onCompass);
     window.addEventListener("deviceorientation", onOrientation);
     overlay.hidden = false;
@@ -300,7 +331,8 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
       camera: { width: frames[0].width, height: frames[0].height, projection_matrix: frames[0].projection_matrix },
       diagnostics: { ...active.diagnostics, camera_image: `${frames[0].width} x ${frames[0].height}`, readback_ms: timingStats(active.readbackMs), encode_ms: timingStats(active.encodeMs),
         jpeg_kb: Math.round(mean(blobs.map(blob => blob.size)) / 1024), xr_frames: active.xrFrames, xr_frames_per_s: Math.round(active.xrFrames / durationS),
-        xr_frames_without_camera: active.framesWithoutCamera, xr_frames_tracking_lost: active.trackingLostFrames, compass_events_during_session: active.compassEvents,
+        xr_frames_without_camera: active.framesWithoutCamera, xr_frames_tracking_lost: active.trackingLostFrames, xr_frames_too_fast: active.framesTooFast,
+        max_turn_rate_deg_s: MAX_TURN_RATE_DEG_S, max_speed_m_s: MAX_SPEED_M_S, compass_events_during_session: active.compassEvents,
         orientation_events_during_session: active.orientationEvents, compass_rate_per_s: Math.round(active.compassEvents / durationS), webgl_context_lost: active.contextLost,
         max_frames_reached: frames.length >= MAX_FRAMES, gps_error: gps.error ?? null, duration_s: Math.round(10 * durationS) / 10,
         // As "moved" in the status line: extent of the camera path over all poses, not only the kept frames.

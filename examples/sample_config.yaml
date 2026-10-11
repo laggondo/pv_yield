@@ -20,9 +20,13 @@ sky_obstruction:
     feature: orb                    ### orb or sift
     max_features: 2000              ### per frame
     max_image_px: 960               ### frames downscaled to this longer side
+    max_turn_rate_deg_s: 20         ### frames taken while turning faster are blurred and skipped
     min_baseline_m: 0.2             ### frame pairs: at least this far apart ...
     max_pairs_per_frame: 5          ### ... with viewing directions at most half the field of view apart (max_view_angle_deg)
-    max_epipolar_px: 2.0            ### matches within this distance of the epipolar line of the known poses
+    max_pose_error_px: 20           ### matches near the epipolar line of the recorded poses, then checked against the images (ransac_px: 1.5)
+    adjust_poses: true              ### refine the recorded poses from the images (bundle adjustment) ...
+    rotation_prior_deg: 1.0         ### ... staying within about this of the recorded orientation ...
+    position_prior_m: 0.02          ### ... and position
     min_triangulation_angle_deg: 2.0  ### points need this much parallax ...
     min_distance_m: 0.3             ### ... and this distance from the cameras
 panel:
