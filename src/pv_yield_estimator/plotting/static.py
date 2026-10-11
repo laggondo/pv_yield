@@ -159,3 +159,33 @@ def static_figures(result, obstructed_sky, irradiation):
     """All static figures of a yield result by name, in the order of the interactive plots."""
     return {"sky_hemisphere": sky_hemisphere_figure(obstructed_sky, irradiation), "monthly_profiles": monthly_profiles_figure(result), "daily_bars": daily_bars_figure(result),
             "carpet": carpet_figure(result), "orientation": orientation_figure(result)}
+
+
+def reconstruction_figure(points, figsize=(11.0, 6.0), max_points=50_000):
+    """Point cloud reconstructed from an AR recording (#48), for checking: from above (east right, north up) and from the south (east right, up), points coloured by height, with the camera path and the reference position.
+
+    The axes cover the central 98 % of the points (a few wrong far points don't squeeze the plot); at most
+    `max_points` points are drawn (an even sample).
+    """
+    figure = Figure(figsize=figsize, layout="constrained")
+    top, side = figure.subplots(1, 2, gridspec_kw={"width_ratios": [1, 1]})
+    xyz = points.points
+    if len(xyz) > max_points:
+        xyz = xyz[np.linspace(0, len(xyz) - 1, max_points).astype(int)]
+    path = points.path
+    extent = np.concatenate([np.zeros((1, 3)), path] + ([np.percentile(xyz, [1, 99], axis=0)] if len(xyz) else []))
+    low, high = extent.min(axis=0) - 0.3, extent.max(axis=0) + 0.3
+    for axes, (first, second), labels in ((top, (0, 1), ("east (m)", "north (m)")), (side, (0, 2), ("east (m)", "up (m)"))):
+        if len(xyz):
+            scatter = axes.scatter(xyz[:, first], xyz[:, second], c=xyz[:, 2], s=1.0, cmap="viridis", vmin=low[2], vmax=high[2], linewidths=0)
+        if len(path):
+            axes.plot(path[:, first], path[:, second], color="#d62728", linewidth=1.5, label="camera path")
+        axes.plot(0, 0, marker="+", color="black", markersize=12, linestyle="none", label="reference position")
+        axes.set(xlim=(low[first], high[first]), ylim=(low[second], high[second]), xlabel=labels[0], ylabel=labels[1], aspect="equal")
+        axes.grid(True, linewidth=0.3)
+    top.set_title(f"From above: {len(points.table)} points")
+    side.set_title("From the south")
+    top.legend(loc="upper right", fontsize="small")
+    if len(xyz):
+        figure.colorbar(scatter, ax=[top, side], orientation="horizontal", shrink=0.5, label="height above the reference position (m)")
+    return figure

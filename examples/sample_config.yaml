@@ -16,6 +16,15 @@ sky_obstruction:
     min_points: 10                  ### minimum number of points in an obstructed sky patch
   photo:
     fov_deg: 65                     ### browser app: camera field of view across the photo's longer side, default for new photos
+  ar_video:                         ### point cloud from an AR recording (#48); defaults shown
+    feature: orb                    ### orb or sift
+    max_features: 2000              ### per frame
+    max_image_px: 960               ### frames downscaled to this longer side
+    min_baseline_m: 0.2             ### frame pairs: at least this far apart ...
+    max_pairs_per_frame: 5          ### ... with viewing directions at most half the field of view apart (max_view_angle_deg)
+    max_epipolar_px: 2.0            ### matches within this distance of the epipolar line of the known poses
+    min_triangulation_angle_deg: 2.0  ### points need this much parallax ...
+    min_distance_m: 0.3             ### ... and this distance from the cameras
 panel:
   tilt_deg: 15                      ### null (or left out): optimized
   azimuth_deg: 180                  ### compass: 180 = south; null (or left out): optimized
