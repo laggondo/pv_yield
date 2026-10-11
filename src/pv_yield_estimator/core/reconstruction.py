@@ -232,8 +232,8 @@ def verify_matches(pixels_first, pixels_second, camera_first, camera_second, ran
 
 
 def reconstruct_points(recording, frame_images, heading_offset_deg=None, feature="orb", max_features=2000, max_image_px=960, max_turn_rate_deg_s=20.0, min_baseline_m=0.2, max_view_angle_deg=None,
-                       max_pairs_per_frame=5, ratio=0.8, max_pose_error_px=20.0, ransac_px=1.5, min_pair_matches=20, adjust_poses=True, rotation_prior_deg=1.0, position_prior_m=0.02,
-                       max_adjustment_points=5000, max_reprojection_px=2.0, min_triangulation_angle_deg=2.0, min_frames=2, min_distance_m=0.3, pixel_error_px=1.0, **kwargs):
+                       max_pairs_per_frame=5, ratio=0.8, max_pose_error_px=20.0, ransac_px=1.5, min_pair_matches=20, adjust_poses=True, rotation_prior_deg=1.0, position_prior_m=0.05,
+                       max_rotation_correction_deg=3.0, max_position_correction_m=0.3, max_adjustment_points=5000, max_reprojection_px=2.0, min_triangulation_angle_deg=2.0, min_frames=2, min_distance_m=0.3, pixel_error_px=1.0, **kwargs):
     """Point cloud from an AR recording (`recording.json` as dict) and its frames' JPEG bytes (same order); returns `ReconstructedPoints`.
 
     Settings (config section `sky_obstruction.ar_video`):
@@ -249,7 +249,8 @@ def reconstruct_points(recording, frame_images, heading_offset_deg=None, feature
       `ransac_px`); a pair needs at least `min_pair_matches` matches.
     - With `adjust_poses`, the camera poses are refined from the images (`adjust_frame_poses`, bundle adjustment
       with up to `max_adjustment_points` points), staying close to the recorded ones (`rotation_prior_deg`,
-      `position_prior_m`); frames whose observations still don't fit are dropped.
+      `position_prior_m`); frames whose observations still don't fit, or that needed a correction beyond
+      `max_rotation_correction_deg` or `max_position_correction_m`, are dropped.
     - Points: triangulated per track (matches joined over all frames), observations off by more than
       `max_reprojection_px` dropped, then at least `min_frames` observing frames and a triangulation angle of at
       least `min_triangulation_angle_deg`, at least `min_distance_m` from the observing cameras (on average; rays from
@@ -306,7 +307,8 @@ def reconstruct_points(recording, frame_images, heading_offset_deg=None, feature
     tracks = build_tracks(edges, offsets, keypoints, colour_images)
     adjustment = {}
     if adjust_poses and tracks is not None:
-        poses, adjustment, frame_fits = adjust_frame_poses(poses, tracks, rotation_prior_deg, position_prior_m, max_adjustment_points, max_pose_error_px, min_triangulation_angle_deg, max_reprojection_px, pixel_error_px)
+        poses, adjustment, frame_fits = adjust_frame_poses(poses, tracks, rotation_prior_deg, position_prior_m, max_rotation_correction_deg, max_position_correction_m, max_adjustment_points, max_pose_error_px,
+                                                           min_triangulation_angle_deg, max_reprojection_px, pixel_error_px)
         usable &= frame_fits
     timings["adjustment_s"] = time.perf_counter() - start
 
@@ -322,7 +324,8 @@ def reconstruct_points(recording, frame_images, heading_offset_deg=None, feature
                   "n_observations": observation_count, "n_points": len(points), **{key: round(value, 3) for key, value in timings.items()}}
     settings = {"feature": feature, "max_features": max_features, "max_image_px": max_image_px, "max_turn_rate_deg_s": max_turn_rate_deg_s, "min_baseline_m": min_baseline_m, "max_view_angle_deg": max_view_angle_deg,
                 "max_pairs_per_frame": max_pairs_per_frame, "ratio": ratio, "max_pose_error_px": max_pose_error_px, "ransac_px": ransac_px, "min_pair_matches": min_pair_matches, "adjust_poses": adjust_poses,
-                "rotation_prior_deg": rotation_prior_deg, "position_prior_m": position_prior_m, "max_adjustment_points": max_adjustment_points, "max_reprojection_px": max_reprojection_px,
+                "rotation_prior_deg": rotation_prior_deg, "position_prior_m": position_prior_m,
+                "max_rotation_correction_deg": max_rotation_correction_deg, "max_position_correction_m": max_position_correction_m, "max_adjustment_points": max_adjustment_points, "max_reprojection_px": max_reprojection_px,
                 "min_triangulation_angle_deg": min_triangulation_angle_deg, "min_frames": min_frames, "min_distance_m": min_distance_m, "pixel_error_px": pixel_error_px}
     metadata = {"created": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "program_version": __version__, "recording_created": recording.get("created"), **heading,
                 "settings": settings, "statistics": statistics}
@@ -375,15 +378,17 @@ def triangulate_observations(tracks, poses, keep, max_reprojection_px=2.0, round
     return points, keep, errors
 
 
-def adjust_frame_poses(poses, tracks, rotation_prior_deg=1.0, position_prior_m=0.02, max_adjustment_points=5000, max_pose_error_px=20.0, min_triangulation_angle_deg=2.0, max_reprojection_px=2.0, pixel_error_px=1.0):
+def adjust_frame_poses(poses, tracks, rotation_prior_deg=1.0, position_prior_m=0.05, max_rotation_correction_deg=3.0, max_position_correction_m=0.3, max_adjustment_points=5000, max_pose_error_px=20.0, min_triangulation_angle_deg=2.0, max_reprojection_px=2.0, pixel_error_px=1.0):
     """Refine the recorded camera poses from the images (bundle adjustment); returns the adjusted poses, statistics and the mask of frames that fit.
 
     The tracks are triangulated with the recorded poses (observations off by up to `max_pose_error_px`), and the
     best-observed points with enough parallax (at most `max_adjustment_points`) are adjusted together with a small
-    rotation and shift per frame, minimizing the reprojection errors (robust loss) plus priors that keep each frame
+    rotation and shift per frame, minimizing the reprojection errors (robust, soft-L1) plus priors that keep each frame
     within about `rotation_prior_deg` and `position_prior_m` of its recorded pose; the priors also keep the recorded
     scale, vertical and heading. A frame fits if its median reprojection error afterwards is at most
-    `max_reprojection_px`.
+    `max_reprojection_px` and its correction stays within `max_rotation_correction_deg` and
+    `max_position_correction_m` (larger ones mean its recorded pose or its matches are wrong, so neither is trusted);
+    frames that don't fit keep their recorded pose.
     """
     from scipy.optimize import least_squares
     from scipy.spatial.transform import Rotation
@@ -405,16 +410,26 @@ def adjust_frame_poses(poses, tracks, rotation_prior_deg=1.0, position_prior_m=0
     n_frames, n_points, n_observations = len(frames), len(chosen_tracks), len(observed_pixels)
     recorded_rotations, recorded_centres, cameras = poses.world_to_camera[frames], poses.centres[frames], poses.camera_matrices[frames]
     rotation_scale = np.radians(rotation_prior_deg)
+    robust_scale = 3.0
+
+    def robust(errors):
+        """Pseudo-residuals whose squares give the soft-L1 loss: quadratic for small errors, growing like the square root of large ones, so wrong matches don't pull.
+
+        Applied to the reprojection errors only: `least_squares`' own loss would also soften the priors and let single
+        frames jump by metres.
+        """
+        scaled = errors / robust_scale
+        return robust_scale * np.sign(scaled) * np.sqrt(2.0 * (np.sqrt(1.0 + scaled * scaled) - 1.0))
 
     def residuals(parameters):
-        """Reprojection errors (in units of `pixel_error_px`) and the priors of the frame corrections."""
+        """Robust reprojection errors (in units of `pixel_error_px`) and the priors of the frame corrections."""
         corrections = parameters[:6 * n_frames].reshape(n_frames, 6)
         positions = parameters[6 * n_frames:].reshape(n_points, 3)
         rotations = Rotation.from_rotvec(corrections[:, :3]).as_matrix() @ recorded_rotations
         in_camera = np.einsum("nij,nj->ni", rotations[frame_index], positions[point_index] - (recorded_centres + corrections[:, 3:])[frame_index])
         homogeneous = np.einsum("nij,nj->ni", cameras[frame_index], in_camera)
         projected = homogeneous[:, :2] / np.maximum(homogeneous[:, 2], 1e-3)[:, None]
-        return np.concatenate([((projected - observed_pixels) / pixel_error_px).ravel(), (corrections[:, :3] / rotation_scale).ravel(), (corrections[:, 3:] / position_prior_m).ravel()])
+        return np.concatenate([robust((projected - observed_pixels) / pixel_error_px).ravel(), (corrections[:, :3] / rotation_scale).ravel(), (corrections[:, 3:] / position_prior_m).ravel()])
 
     ### Which residual depends on which parameter: each pixel coordinate on its frame's 6 corrections and its point's 3 coordinates, each prior on its correction.
     rows = (2 * np.arange(n_observations)[:, None] + np.arange(2))[:, :, None]
@@ -424,16 +439,20 @@ def adjust_frame_poses(poses, tracks, rotation_prior_deg=1.0, position_prior_m=0
     columns = np.concatenate([columns.ravel(), np.arange(6 * n_frames)])
     sparsity = coo_matrix((np.ones(len(rows), dtype=int), (rows, columns)), shape=(2 * n_observations + 6 * n_frames, 6 * n_frames + 3 * n_points))
     start = np.concatenate([np.zeros(6 * n_frames), points[chosen_tracks].ravel()])
-    result = least_squares(residuals, start, jac_sparsity=sparsity, x_scale="jac", loss="soft_l1", f_scale=3.0, method="trf", max_nfev=50)
+    result = least_squares(residuals, start, jac_sparsity=sparsity, x_scale="jac", method="trf", max_nfev=50)
     corrections = result.x[:6 * n_frames].reshape(n_frames, 6)
-    adjusted = poses.corrected(frames, corrections[:, :3], corrections[:, 3:])
-    errors = np.hypot(*(result.fun[:2 * n_observations].reshape(-1, 2) * pixel_error_px).T)
-    frame_errors = np.array([np.median(errors[frame_index == index]) for index in range(n_frames)])
-    fits[frames[frame_errors > max_reprojection_px]] = False
     rotation_deg, position_m = np.degrees(np.linalg.norm(corrections[:, :3], axis=1)), np.linalg.norm(corrections[:, 3:], axis=1)
+    adjusted = poses.corrected(frames, corrections[:, :3], corrections[:, 3:])
+    in_camera = np.einsum("nij,nj->ni", adjusted.world_to_camera[frames][frame_index], result.x[6 * n_frames:].reshape(n_points, 3)[point_index] - adjusted.centres[frames][frame_index])
+    homogeneous = np.einsum("nij,nj->ni", cameras[frame_index], in_camera)
+    errors = np.linalg.norm(homogeneous[:, :2] / np.maximum(homogeneous[:, 2], 1e-3)[:, None] - observed_pixels, axis=1)
+    frame_errors = np.array([np.median(errors[frame_index == index]) for index in range(n_frames)])
+    rejected = (frame_errors > max_reprojection_px) | (rotation_deg > max_rotation_correction_deg) | (position_m > max_position_correction_m)
+    fits[frames[rejected]] = False
+    adjusted = poses.corrected(frames[~rejected], corrections[~rejected, :3], corrections[~rejected, 3:])
     statistics = {"adjusted_frames": n_frames, "adjusted_points": n_points, "rotation_correction_deg_median": round(float(np.median(rotation_deg)), 3), "rotation_correction_deg_max": round(float(rotation_deg.max()), 3),
                   "position_correction_m_median": round(float(np.median(position_m)), 4), "position_correction_m_max": round(float(position_m.max()), 4),
-                  "reprojection_px_median_after_adjustment": round(float(np.median(errors)), 3), "n_frames_not_fitting": int(np.count_nonzero(frame_errors > max_reprojection_px))}
+                  "reprojection_px_median_after_adjustment": round(float(np.median(errors)), 3), "n_frames_not_fitting": int(np.count_nonzero(rejected))}
     log.debug(f"Pose adjustment: {statistics}, {result.nfev} evaluations, {result.message}")
     return adjusted, statistics, fits
 
