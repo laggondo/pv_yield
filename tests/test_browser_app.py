@@ -567,6 +567,7 @@ def test_browser_page_computes_sample(tmp_path, session):
             assert page.locator("#recording-inspection").is_visible() and page.evaluate("document.getElementById('ar-video').open")
             assert "12 frames" in page.text_content("#recording-summary") and "from 12 compass readings" in page.text_content("#recording-summary") and page.input_value("#recording-reference") == "synthetic reference"
             assert page.input_value("#recording-heading") == "30" and page.locator("#recording-frames img").count() == 2
+            assert json.loads(page.text_content("#recording-diagnostics"))["camera_path_m"]["start_to_end"] == pytest.approx(np.linalg.norm([2.0, 0.1 * np.sin(3), 0.3]), abs=0.001)
             page.wait_for_function("[...document.querySelectorAll('#recording-frames img')].every(image => image.complete && image.naturalWidth === 160)", timeout=10_000)
             median_colour = ("([azimuth, elevation]) => { const radius = 360 * (90 - elevation) / 90, x = Math.round(400 + radius * Math.sin(azimuth * Math.PI / 180)), y = Math.round(400 - radius * Math.cos(azimuth * Math.PI / 180));"
                              " const data = document.getElementById('sky-map-canvas').getContext('2d').getImageData(x - 4, y - 4, 9, 9).data;"

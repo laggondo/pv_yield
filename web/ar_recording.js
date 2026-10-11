@@ -302,7 +302,9 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
         jpeg_kb: Math.round(mean(blobs.map(blob => blob.size)) / 1024), xr_frames: active.xrFrames, xr_frames_per_s: Math.round(active.xrFrames / durationS),
         xr_frames_without_camera: active.framesWithoutCamera, xr_frames_tracking_lost: active.trackingLostFrames, compass_events_during_session: active.compassEvents,
         orientation_events_during_session: active.orientationEvents, compass_rate_per_s: Math.round(active.compassEvents / durationS), webgl_context_lost: active.contextLost,
-        max_frames_reached: frames.length >= MAX_FRAMES, gps_error: gps.error ?? null, duration_s: Math.round(10 * durationS) / 10 },
+        max_frames_reached: frames.length >= MAX_FRAMES, gps_error: gps.error ?? null, duration_s: Math.round(10 * durationS) / 10,
+        // As "moved" in the status line: extent of the camera path over all poses, not only the kept frames.
+        moved_all_poses_m: Math.hypot(active.box.max.x - active.box.min.x, active.box.max.y - active.box.min.y, active.box.max.z - active.box.min.z) },
       frames,
     };
     active = null;
@@ -356,7 +358,7 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
       gps, `Reference position: ${data.reference_note || "not described"}`,
     ].map(line => `<div>${line.replace(/</g, "&lt;")}</div>`).join("");
     const rounded = (key, value) => typeof value === "number" ? Math.round(value * 1000) / 1000 : value;
-    element("recording-diagnostics").textContent = JSON.stringify({ ...data.diagnostics, projection: s.projection, compass_estimate: s.compass_estimate, user_agent: data.user_agent }, rounded, 2);
+    element("recording-diagnostics").textContent = JSON.stringify({ ...data.diagnostics, camera_path_m: { baseline: s.baseline_m, length: s.path_length_m, start_to_end: s.start_to_end_m }, projection: s.projection, compass_estimate: s.compass_estimate, user_agent: data.user_agent }, rounded, 2);
   }
 
   // The camera path from above (east right, north up), in metres, with the reference position (start) and the end.
