@@ -101,5 +101,7 @@ caption { text-align: left; font-size: 0.9rem; color: #444; padding-bottom: 4px;
 #recording-frames figure { margin: 0; flex: 1 1 140px; max-width: 320px; }
 #recording-frames img { width: 100%; border-radius: 4px; }
 #recording-frames figcaption { font-size: 0.8rem; color: #555; }
+.copyable { position: relative; }
+.copyable button.copy { position: absolute; top: 4px; right: 4px; padding: 2px 8px; font-size: 0.8rem; }
 #recording-diagnostics { font-size: 0.75rem; background: #f4f4f4; padding: 8px; overflow-x: auto; }
 #recording-diagnostics-details summary { cursor: pointer; font-size: 0.9rem; color: #555; }

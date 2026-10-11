@@ -481,6 +481,14 @@ export function createArRecorder({ element, call, report, fail, whileBusy, edito
   element("recording-heading-compass").addEventListener("click", () => whileBusy(() => headingChanged(true)));
   element("recording-reference").addEventListener("change", () => referenceChanged().catch(fail));
   element("recording-remove").addEventListener("click", () => whileBusy(remove));
+  // Copy the diagnostics as text, e.g. to paste them into an issue.
+  element("recording-diagnostics-copy").addEventListener("click", async () => {
+    const button = element("recording-diagnostics-copy");
+    await navigator.clipboard.writeText(element("recording-diagnostics").textContent).then(() => {
+      button.textContent = "Copied";
+      setTimeout(() => { button.textContent = "Copy"; }, 1500);
+    }, fail);
+  });
 
   return {
     start, stop, setRecording,
