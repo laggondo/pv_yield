@@ -25,7 +25,18 @@ let nextCallId = 0;
 let pythonReady = false;
 // Loaded inputs as file content, kept to re-parse (weather format change), to save as files and to store for the next visit.
 // The irradiation per sky patch is only kept to save it again, if a loaded project has it (the page computes its own).
-const inputs = { weather: null, sky: null, irradiation: null };        // {text, filename, source?}
+// Photo groups (#55): each has its own obstructed sky description (`sky`, null until loaded, computed or marked); the
+// obstruction tab works on the active group. Group A is always there.
+const FIRST_GROUP = "A";
+const GROUP_NAMES = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const inputs = { weather: null, groups: [{ name: FIRST_GROUP, sky: null }], irradiation: null };        // {text, filename, source?}
+let activeGroup = FIRST_GROUP;
+// Positions of the photo groups and the panel: [east, north, up] in metres relative to group A (from the panel map or
+// typed in); new groups start a few metres east of A, the panel at A.
+const layout = { offsets: {}, panel: [0, 0, 0] };
+const groupEntry = name => inputs.groups.find(group => group.name === name);
+const activeSky = () => groupEntry(activeGroup).sky;
+const offsetOf = name => name === FIRST_GROUP ? [0, 0, 0] : (layout.offsets[name] ?? [0, 0, 0]);
 // The loaded weather data's coordinates ({latitude, longitude}), where the panel map starts without a site.
 let weatherSite = null;
 // Config entries without a form field, from a loaded config file; the form's entries are merged over them.
@@ -62,7 +73,11 @@ function showTab(name) {
   window.scrollTo(0, 0);
   // Drawn while hidden, the sky map and photo get line widths for the wrong size.
   if (name === "obstruction") editor.redraw();
-  if (name === "panel") panelMap.show().catch(fail);
+  if (name === "panel") {
+    panelMap.show().catch(fail);
+    renderPositions();
+    schedulePanelSky();
+  }
   updateResultsIfShown();
 }
 
@@ -127,9 +142,11 @@ function updateButtons() {
   for (const id of ["site-search", "weather-download", "config-save", "project-new", "project-save"]) element(id).disabled = !idle;
   element("lidar-compute").disabled = !idle || !element("lidar-file").files.length;
   element("camera-start").disabled = element("fov-calibrate").disabled = !idle || !editor.isStarted;
+  element("group-new").disabled = !idle || !editor.isStarted || inputs.groups.length >= GROUP_NAMES.length;
+  element("camera-start").textContent = inputs.groups.length > 1 ? `Add photos to group ${activeGroup} (camera)` : "Take photos (camera)";
   element("weather-save").disabled = !inputs.weather;
-  element("sky-save").disabled = !inputs.sky;
-  element("sky-clear").disabled = !idle || !inputs.sky;
+  element("sky-save").disabled = !activeSky();
+  element("sky-clear").disabled = !idle || !activeSky();
   element("export-zip").disabled = element("export-pdf").disabled = !idle || !window.pvYieldApp.lastResult;
 }
 
@@ -148,7 +165,10 @@ async function whileBusy(action, finalState = "ready") {
   updateButtons();
   updateResultsIfShown();
   // Inputs that move the panel map (site, weather, config, project) may have changed.
-  if (!element("tab-panel").hidden) panelMap.show().catch(fail);
+  if (!element("tab-panel").hidden) {
+    panelMap.show().catch(fail);
+    schedulePanelSky();
+  }
 }
 
 // Load a classic script (BokehJS) and resolve when it has run.
@@ -313,7 +333,8 @@ function currentConfig() {
     site: { query: element("site-query").value.trim() || null, latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") },
     weather: { source: element("weather-source").value, n_years: requiredNumber("weather-years") },
     sky_obstruction: { method: "lidar", lidar: { scanner_heading_deg: requiredNumber("scanner_heading_deg"), panel_offset_m: ["offset-east", "offset-north", "offset-up"].map(requiredNumber), min_points: requiredNumber("min_points") },
-      photo: { fov_deg: requiredNumber("camera_fov_deg") } },
+      photo: { fov_deg: requiredNumber("camera_fov_deg") },
+      groups: inputs.groups.map(({ name }) => ({ name, offset_m: offsetOf(name) })), panel_position_m: layout.panel },
     panel: { tilt_deg: numberOrNull("tilt_deg"), azimuth_deg: numberOrNull("azimuth_deg"), area_m2: requiredNumber("area_m2"), efficiency: requiredNumber("efficiency"), performance_ratio: requiredNumber("performance_ratio") },
     orientation: { compare: parseCompare(element("compare").value) },
     simulation: { n_sky_nodes: requiredNumber("n_sky_nodes") },
@@ -339,6 +360,10 @@ function applyConfig(config) {
   if (lidar.min_points !== undefined) set("min_points", lidar.min_points);
   if (config.sky_obstruction?.photo?.fov_deg !== undefined) set("camera_fov_deg", config.sky_obstruction.photo.fov_deg);
   if (value("simulation", "n_sky_nodes")) set("n_sky_nodes", value("simulation", "n_sky_nodes"));
+  // Positions of the photo groups and the panel (#55).
+  for (const { name, offset_m } of config.sky_obstruction?.groups ?? []) if (name && Array.isArray(offset_m)) layout.offsets[String(name)] = [0, 1, 2].map(index => Number(offset_m[index] ?? 0));
+  if (Array.isArray(config.sky_obstruction?.panel_position_m)) layout.panel = [0, 1, 2].map(index => Number(config.sky_obstruction.panel_position_m[index] ?? 0));
+  remember("layout", layout);
   importedConfig = config;
   updatePvgisLink();
 }
@@ -360,50 +385,258 @@ async function loadWeather(text, filename, source = "auto") {
 }
 
 function showSkySummary(summary, filename) {
-  element("sky-summary").textContent = `${filename}: ${summary.n_obstructed} of ${summary.n_patches} sky patches obstructed (${percent(summary.obstructed_solid_angle_fraction)} of the solid angle), horizontal sky view factor ${format(summary.sky_view_factor_horizontal, 3)}; method ${summary.method || "?"}${summary.input_file ? ` from ${summary.input_file}` : ""}`;
+  element("sky-summary").textContent = `${inputs.groups.length > 1 ? `Group ${activeGroup}: ` : ""}${filename}: ${summary.n_obstructed} of ${summary.n_patches} sky patches obstructed (${percent(summary.obstructed_solid_angle_fraction)} of the solid angle), horizontal sky view factor ${format(summary.sky_view_factor_horizontal, 3)}; method ${summary.method || "?"}${summary.input_file ? ` from ${summary.input_file}` : ""}`;
 }
 
+// Load an obstructed sky description into the active photo group.
 async function loadObstructedSky(text, filename) {
-  inputs.sky = null;
   element("sky-summary").textContent = "loading ...";
-  const summary = await call("loadObstructedSky", text, filename);
+  let summary;
+  try {
+    summary = await call("loadObstructedSky", text, filename);
+  } catch (error) {
+    showActiveSkySummary();
+    throw error;
+  }
+  groupEntry(activeGroup).sky = { text, filename };
   showSkySummary(summary, filename);
   // The resolution field takes the setting that gives the loaded description's grid (none for other grids).
   if (summary.n_sky_nodes !== null) element("n_sky_nodes").value = summary.n_sky_nodes;
-  inputs.sky = { text, filename };
   inputsVersion++;
-  report(`Obstructed sky description loaded: ${filename}`);
-  await remember("sky", inputs.sky);
+  report(`Obstructed sky description loaded${inputs.groups.length > 1 ? ` for group ${activeGroup}` : ""}: ${filename}`);
+  await storeGroups();
+  schedulePanelSky();
   if (editor.isStarted) await editor.reload();
+}
+
+// The summary of the active group's obstructed sky description (none: free sky), from Python.
+async function showActiveSkySummary() {
+  const summary = await call("selectGroup", activeGroup);
+  if (summary) showSkySummary(summary, activeSky()?.filename ?? "marked");
+  else element("sky-summary").textContent = (inputs.groups.length > 1 ? `Group ${activeGroup}: ` : "") + NO_SKY_SUMMARY;
+}
+
+// Keep the groups' descriptions and the active group for the next visit.
+async function storeGroups() {
+  await remember("groups", { groups: inputs.groups, active: activeGroup });
 }
 
 async function computeObstruction() {
   const file = element("lidar-file").files[0];
-  inputs.sky = null;
   element("sky-summary").textContent = `computing from ${file.name} (${format(file.size / 1e6, 1)} MB) ...`;
   report(`Computing the obstructed sky from ${file.name}`);
   const summary = await call("computeObstruction", file, currentConfig());
   const filename = `obstructed_sky_${file.name.replace(/\.[^.]*$/, "")}.json`;
-  inputs.sky = { text: await call("obstructedSkyText"), filename };
+  groupEntry(activeGroup).sky = { text: await call("obstructedSkyText"), filename };
   inputsVersion++;
   showSkySummary(summary, filename);
   report(`Obstructed sky computed from ${file.name}`);
-  await remember("sky", inputs.sky);
+  await storeGroups();
   if (editor.isStarted) await editor.reload();
 }
 
 // The obstructed sky description marked by hand (photos, sky map) replaces the loaded one; kept like a loaded file.
 async function skyMarked(summary) {
-  const filename = `obstructed_sky_${(summary.method || "marked").replace(/\+/g, "_")}.json`;
-  inputs.sky = { text: await call("obstructedSkyText"), filename };
+  const filename = `obstructed_sky_${inputs.groups.length > 1 ? `${activeGroup}_` : ""}${(summary.method || "marked").replace(/\+/g, "_")}.json`;
+  groupEntry(activeGroup).sky = { text: await call("obstructedSkyText"), filename };
   inputsVersion++;
   showSkySummary(summary, filename);
   updateButtons();
-  await remember("sky", inputs.sky);
+  schedulePanelSky();
+  await storeGroups();
+}
+
+// ---- Photo groups (#55) ----
+
+// Make a group the active one (created if new): the sky map, the photos and the sources work on it. The JavaScript
+// side changes at once, so a camera opened in the same tap shows the new group.
+async function selectGroup(name) {
+  if (!groupEntry(name)) addGroupEntry(name);
+  activeGroup = name;
+  editor.setActiveGroup(name);
+  renderGroups();
+  await showActiveSkySummary();
+  await storeGroups();
+  if (editor.isStarted) await editor.reload();
+  updateButtons();
+}
+
+// A new group in the list, placed a few metres east of the last one until it is placed on the map.
+function addGroupEntry(name) {
+  inputs.groups.push({ name, sky: null });
+  if (!layout.offsets[name]) {
+    const eastmost = Math.max(...inputs.groups.map(group => offsetOf(group.name)[0]).filter(value => Number.isFinite(value)), 0);
+    layout.offsets[name] = [Math.round(eastmost + 3), 0, 0];
+  }
+  inputsVersion++;
+  remember("layout", layout);
+}
+
+// Groups for loaded photos (photo sets): missing ones are created; the active group stays.
+async function ensureGroups(names) {
+  const missing = names.filter(name => !groupEntry(name));
+  for (const name of missing) {
+    addGroupEntry(name);
+    await call("selectGroup", name);
+  }
+  if (missing.length) {
+    await call("selectGroup", activeGroup);
+    renderGroups();
+    await storeGroups();
+  }
+}
+
+// The next group (A, B, C, ...), with the camera opened right away. The camera starts in the tap's handler (iOS
+// grants the motion sensors only then), while the group is switched.
+function newGroup() {
+  const name = [...GROUP_NAMES].find(letter => !groupEntry(letter));
+  return whileBusy(async () => {
+    const switching = selectGroup(name);
+    await editor.startCamera();
+    await switching;
+    report(`Photo group ${name} created: take its photos from one spot, then place it on the map (tab Panel)`);
+  });
+}
+
+// Open the camera for a group (continue it), switching to it first.
+function addPhotos(name) {
+  return whileBusy(async () => {
+    const switching = name === activeGroup ? Promise.resolve() : selectGroup(name);
+    await editor.startCamera();
+    await switching;
+  });
+}
+
+// Delete a group with its photos and description (after a confirmation); group A stays.
+async function deleteGroup(name) {
+  if (name === FIRST_GROUP) return;
+  const count = editor.groupPhotoCount(name);
+  if (!confirm(`Delete photo group ${name}${count ? ` with its ${count} photo${count === 1 ? "" : "s"}` : ""}${groupEntry(name)?.sky ? " and its sky map" : ""}?`)) return;
+  await call("deleteGroup", name);
+  inputs.groups = inputs.groups.filter(group => group.name !== name);
+  delete layout.offsets[name];
+  editor.removeGroupPhotos(name);
+  inputsVersion++;
+  report(`Photo group ${name} deleted`);
+  await remember("layout", layout);
+  if (activeGroup === name) await selectGroup(FIRST_GROUP);
+  else {
+    renderGroups();
+    await storeGroups();
+  }
+}
+
+// Replace the groups (restored or from a project): each group's description is loaded into it in Python.
+async function setGroups(groups, active = FIRST_GROUP) {
+  const list = groups?.length ? groups : [{ name: FIRST_GROUP, sky: null }];
+  for (const { name, sky } of list) {
+    if (!groupEntry(name)) addGroupEntry(name);
+    activeGroup = name;
+    editor.setActiveGroup(name);
+    await call("selectGroup", name);
+    if (sky) await loadObstructedSky(sky.text, sky.filename);
+  }
+  await selectGroup(groupEntry(active) ? active : FIRST_GROUP);
+}
+
+// The group selector above the sky map, the photo list and the positions on the panel tab follow the groups.
+function renderGroups() {
+  const several = inputs.groups.length > 1;
+  element("group-tabs").hidden = !several;
+  element("group-tabs").replaceChildren(...inputs.groups.map(({ name }) => {
+    const button = Object.assign(document.createElement("button"), { textContent: name, className: name === activeGroup ? "small selected" : "small" });
+    button.setAttribute("aria-pressed", String(name === activeGroup));
+    button.setAttribute("aria-label", `Show group ${name}`);
+    button.addEventListener("click", () => { if (name !== activeGroup) whileBusy(() => selectGroup(name), readyOrComputed); });
+    return button;
+  }));
+  editor.showPhotoList();
+  renderPositions();
+  panelMap.drawGroups();
+  schedulePanelSky();
+}
+
+// Rows with the groups' and the panel's positions (east, north, height in metres from group A), editable, and the
+// distances between them; shown with several groups.
+function renderPositions() {
+  const several = inputs.groups.length > 1;
+  element("group-positions").hidden = !several;
+  if (!several) return;
+  const rows = element("position-rows");
+  const titles = ["", "East (m)", "North (m)", "Height (m)"].map(text => Object.assign(document.createElement("span"), { className: "column-title", textContent: text }));
+  const row = (title, values, onChange, editable = true) => [Object.assign(document.createElement("span"), { className: "row-title", textContent: title }),
+    ...values.map((value, index) => {
+      const input = Object.assign(document.createElement("input"), { type: "number", step: "any", value: String(value), disabled: !editable });
+      input.dataset.position = `${title}-${index}`;
+      input.setAttribute("aria-label", `${title}: ${["east", "north", "height"][index]} (m)`);
+      input.addEventListener("change", () => {
+        const number = Number(input.value);
+        if (input.value.trim() !== "" && Number.isFinite(number)) onChange(index, number);
+      });
+      return input;
+    })];
+  rows.replaceChildren(...titles,
+    ...inputs.groups.flatMap(({ name }) => row(`Group ${name}`, offsetOf(name), (index, number) => { const offset = [...offsetOf(name)]; offset[index] = number; positionsChanged(name, offset); }, name !== FIRST_GROUP)),
+    ...row("Panel", layout.panel, (index, number) => { const panel = [...layout.panel]; panel[index] = number; positionsChanged(null, panel); }));
+  const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const points = [...inputs.groups.map(({ name }) => [name, offsetOf(name)]), ["panel", layout.panel]];
+  const pairs = [];
+  for (let first = 0; first < points.length; first++) for (let second = first + 1; second < points.length; second++) pairs.push(`${points[first][0]}–${points[second][0]} ${format(distance(points[first][1], points[second][1]), 1)} m`);
+  const marked = inputs.groups.filter(group => group.sky).length;
+  element("group-distances").textContent = `Distances: ${pairs.join(", ")}.` + (marked < 2 ? " Mark the sky maps of at least two groups to get the obstruction at the panel's position." : "");
+}
+
+// A group (name) or the panel (null) moved: keep the position, update the map, the rows and the preview.
+function positionsChanged(name, offset) {
+  if (name === null) layout.panel = offset;
+  else layout.offsets[name] = offset;
+  remember("layout", layout);
+  renderPositions();
+  panelMap.drawGroups();
+  schedulePanelSky();
+}
+
+// The obstruction at the panel position (interpolated from the groups, #54), as a read-only sky map on the panel tab
+// with the distance found per region; computed a moment after the last change.
+let panelSkyTimer = null;
+function schedulePanelSky() {
+  clearTimeout(panelSkyTimer);
+  panelSkyTimer = setTimeout(() => updatePanelSky().catch(fail), 400);
+}
+
+async function updatePanelSky() {
+  const marked = inputs.groups.filter(group => group.sky).length;
+  if (!pythonReady || !editor.isStarted || inputs.groups.length < 2 || marked < 2 || element("tab-panel").hidden) {
+    element("panel-sky").hidden = true;
+    return;
+  }
+  const result = await call("panelSky", currentConfig());
+  if (!result) return;
+  element("panel-sky").hidden = false;
+  const direction = (azimuth, elevation) => {
+    const [a, e] = [azimuth * Math.PI / 180, elevation * Math.PI / 180];
+    return [Math.cos(e) * Math.sin(a), Math.cos(e) * Math.cos(a), Math.sin(e)];
+  };
+  // One label per spot: the largest regions (or sectors) first, others too close to a label left out.
+  const labels = [];
+  for (const region of result.regions.filter(region => region.distance_m !== null && region.n_patches >= 3).sort((a, b) => b.n_patches - a.n_patches)) {
+    const spot = direction(region.azimuth_deg, region.elevation_deg);
+    if (labels.some(({ direction: other }) => Math.acos(Math.min(1, spot[0] * other[0] + spot[1] * other[1] + spot[2] * other[2])) < 0.3)) continue;
+    labels.push({ label: `${format(region.distance_m, region.distance_m < 10 ? 1 : 0)} m`, direction: spot });
+  }
+  editor.drawPreview(element("panel-sky-canvas"), result.obstructed, labels);
+  const unmatched = result.regions.filter(region => !region.matched).length;
+  element("panel-sky-summary").textContent = `Obstructed sky at the panel, moved from group ${result.source_group} (the nearest): ${result.n_obstructed} patches obstructed, horizontal sky view factor ${format(result.sky_view_factor_horizontal, 3)}. `
+    + `Labels: distance found per obstruction (or sector of a large one); obstructions without a label are far away (no shift)${unmatched ? `, or seen from one group only (${unmatched}; they stay as seen from group ${result.source_group})` : ""}.`;
 }
 
 const editor = createSkyEditor({ element, call, report, fail, defaultFov: () => requiredNumber("camera_fov_deg"), nSkyNodes: () => requiredNumber("n_sky_nodes"),
   site: () => ({ latitude: numberOrNull("site-latitude"), longitude: numberOrNull("site-longitude") }), onApplied: skyMarked,
+  groups: () => inputs.groups.map(group => group.name),
+  onSelectGroup: name => whileBusy(() => selectGroup(name), readyOrComputed),
+  onAddPhotos: addPhotos,
+  onDeleteGroup: name => whileBusy(() => deleteGroup(name), readyOrComputed),
+  onGroupsNeeded: ensureGroups,
   onPhotosChanged: async () => remember("photos", await editor.photoFiles()),
   // The calibrated field of view replaces the form's value, kept like the other form fields (browser, config, project).
   onFovCalibrated: fovDeg => {
@@ -424,6 +657,10 @@ const panelMap = createPanelMap({ element, report,
     element("azimuth_deg").value = degrees;
     remember("form", formValues());
   },
+  groups: () => inputs.groups.length > 1 ? inputs.groups.map(({ name }) => ({ name, offset: offsetOf(name) })) : [],
+  panelOffset: () => inputs.groups.length > 1 ? layout.panel : [0, 0, 0],
+  onGroupMoved: (name, east, north) => positionsChanged(name, [east, north, offsetOf(name)[2]]),
+  onPanelMoved: (east, north) => positionsChanged(null, [east, north, layout.panel[2]]),
   onPosition: (latitude, longitude) => {
     element("site-latitude").value = latitude.toFixed(5);
     element("site-longitude").value = longitude.toFixed(5);
@@ -532,7 +769,7 @@ async function saveProject() {
       report(`Saving the project without results, as computing them failed: ${error.message ?? error}`);
     }
   }
-  const project = { config: currentConfig(), weather: inputs.weather, obstructed_sky: inputs.sky, irradiation: inputs.irradiation, include_results: includeResults };
+  const project = { config: currentConfig(), weather: inputs.weather, groups: inputs.groups.map(({ name, sky }) => ({ name, obstructed_sky: sky })), irradiation: inputs.irradiation, include_results: includeResults };
   const pointCloud = element("lidar-file").files[0] ?? null;
   report(`Saving the project${pointCloud ? ` with the point cloud ${pointCloud.name} (${format(pointCloud.size / 1e6, 1)} MB)` : ""} ...`);
   saveFile(projectFilename(), await call("saveProject", project, await editor.photoFiles(), pointCloud), "application/zip");
@@ -541,7 +778,10 @@ async function saveProject() {
 // Empty the inputs and set the form to the page's defaults (also in the browser's storage), e.g. before loading a project.
 async function resetInputs() {
   await call("reset");
-  Object.assign(inputs, { weather: null, sky: null, irradiation: null });
+  Object.assign(inputs, { weather: null, groups: [{ name: FIRST_GROUP, sky: null }], irradiation: null });
+  activeGroup = FIRST_GROUP;
+  editor.setActiveGroup(FIRST_GROUP);
+  Object.assign(layout, { offsets: {}, panel: [0, 0, 0] });
   weatherSite = null;
   inputsVersion++;
   importedConfig = {};
@@ -556,12 +796,13 @@ async function resetInputs() {
   element("weather-summary").textContent = "not loaded";
   element("sky-summary").textContent = NO_SKY_SUMMARY;
   await editor.setPhotos([]);
+  renderGroups();
   // The reset session forgot the start state of marking: start again from a free sky.
   if (editor.isStarted) await editor.reload();
   window.pvYieldApp.lastResult = null;
   Object.assign(results, { computedKey: null, attemptedKey: null, pendingPlots: null });
   showResultsMessage(NO_RESULTS_MESSAGE);
-  await Promise.all([remember("form", formValues()), remember("config", {}), remember("weather", null), remember("sky", null)]);
+  await Promise.all([remember("form", formValues()), remember("config", {}), remember("weather", null), remember("sky", null), storeGroups(), remember("layout", layout)]);
 }
 
 // Start a new project: empty inputs, the form at its defaults (also for the next visit).
@@ -583,7 +824,7 @@ async function loadProject(file) {
   }
   await remember("form", formValues());
   if (project.weather) await loadWeather(project.weather.text, project.weather.filename, project.weather.source);
-  if (project.obstructed_sky) await loadObstructedSky(project.obstructed_sky.text, project.obstructed_sky.filename);
+  await setGroups((project.groups ?? [{ name: FIRST_GROUP, obstructed_sky: project.obstructed_sky }]).map(({ name, obstructed_sky }) => ({ name, sky: obstructed_sky })));
   if (project.photos.length) await editor.setPhotos(project.photos);
   if (project.point_cloud) {
     // A file input can only be set through a DataTransfer; the point cloud is then used like a picked file.
@@ -713,13 +954,15 @@ function updateResultsIfShown() {
 
 // Restore the inputs and form of the last visit, if stored.
 async function restoreStoredInputs() {
-  const [form, weather, sky, config, photos] = await Promise.all([recall("form"), recall("weather"), recall("sky"), recall("config"), recall("photos")]);
+  const [form, weather, sky, groups, storedLayout, config, photos] = await Promise.all([recall("form"), recall("weather"), recall("sky"), recall("groups"), recall("layout"), recall("config"), recall("photos")]);
   if (config) importedConfig = config;
+  if (storedLayout) Object.assign(layout, { offsets: storedLayout.offsets ?? {}, panel: storedLayout.panel ?? [0, 0, 0] });
   setFormValues(form);
   if (weather) await loadWeather(weather.text, weather.filename, weather.source ?? "auto");
-  if (sky) await loadObstructedSky(sky.text, sky.filename);
+  // Stored before the photo groups (#55): one description, for group A.
+  await setGroups(groups?.groups ?? [{ name: FIRST_GROUP, sky: sky ?? null }], groups?.active);
   if (photos?.length) await editor.setPhotos(photos);
-  if (form || weather || sky || photos?.length) report(`Restored the inputs of the last visit${photos?.length ? ` (${photos.length} photos)` : ""}`);
+  if (form || weather || sky || groups || photos?.length) report(`Restored the inputs of the last visit${photos?.length ? ` (${photos.length} photos)` : ""}${inputs.groups.length > 1 ? ` in ${inputs.groups.length} photo groups` : ""}`);
   updatePvgisLink();
   await editor.reload();
 }
@@ -761,15 +1004,16 @@ element("sky-file").addEventListener("change", async event => {
 });
 element("lidar-file").addEventListener("change", updateButtons);
 element("lidar-compute").addEventListener("click", () => whileBusy(computeObstruction));
-element("sky-save").addEventListener("click", () => saveFile(inputs.sky.filename, inputs.sky.text, "application/json"));
+element("sky-save").addEventListener("click", () => saveFile(activeSky().filename, activeSky().text, "application/json"));
 async function clearObstructedSky() {
   await call("clearObstructedSky");
-  inputs.sky = null;
+  groupEntry(activeGroup).sky = null;
   inputsVersion++;
-  element("sky-summary").textContent = NO_SKY_SUMMARY;
+  element("sky-summary").textContent = (inputs.groups.length > 1 ? `Group ${activeGroup}: ` : "") + NO_SKY_SUMMARY;
   element("sky-file").value = "";
-  report("Obstructed sky description removed: computing without obstruction");
-  await remember("sky", null);
+  report(inputs.groups.length > 1 ? `Obstructed sky description of group ${activeGroup} removed` : "Obstructed sky description removed: computing without obstruction");
+  await storeGroups();
+  schedulePanelSky();
   if (editor.isStarted) await editor.reload();
 }
 
@@ -777,16 +1021,24 @@ element("sky-clear").addEventListener("click", () => whileBusy(clearObstructedSk
 // A new resolution starts again from a free sky; with an obstructed sky description, only after a confirmation.
 element("n_sky_nodes").addEventListener("focus", event => { event.target.dataset.previous = event.target.value; });
 element("n_sky_nodes").addEventListener("change", event => whileBusy(async () => {
-  if (inputs.sky && !confirm(`A new resolution replaces the obstructed sky description (${inputs.sky.filename}) by a free sky. Continue?`)) {
+  const described = inputs.groups.filter(group => group.sky);
+  if (described.length && !confirm(`A new resolution replaces the obstructed sky description${described.length > 1 ? `s of groups ${described.map(group => group.name).join(", ")}` : ` (${described[0].sky.filename})`} by a free sky. Continue?`)) {
     event.target.value = event.target.dataset.previous ?? event.target.value;
     await remember("form", formValues());
     return;
   }
-  if (inputs.sky) await clearObstructedSky();
-  else await editor.reload();
+  // All groups share one resolution: every group's description goes.
+  const active = activeGroup;
+  for (const group of described) {
+    await selectGroup(group.name);
+    await clearObstructedSky();
+  }
+  if (activeGroup !== active) await selectGroup(active);
+  else if (!described.length) await editor.reload();
 }));
 // The camera starts right in the tap's handler: iOS grants the motion sensors only then.
 element("camera-start").addEventListener("click", () => whileBusy(editor.startCamera));
+element("group-new").addEventListener("click", newGroup);
 element("fov-calibrate").addEventListener("click", () => whileBusy(editor.startCalibration));
 element("camera-shoot").addEventListener("click", () => whileBusy(editor.takePhoto));
 element("camera-stop").addEventListener("click", () => editor.stopCamera());
